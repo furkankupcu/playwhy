@@ -23,12 +23,13 @@ import hashlib
 import json
 import logging
 import os
-import re
+
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -248,39 +249,51 @@ class MetaAPIClient:
 
 
 # ---------------------------------------------------------------------------
-# SAM output parsing
+# SAM output parsing (official parser: mask payloads are base85 and may hold any
+# character, so a hand-written regex is not safe)
 # ---------------------------------------------------------------------------
 
-_FRAME_RE = re.compile(r"<(\d+)f>")
-_BOX_RE = re.compile(r"(\d+)<\|box;([^|]*)\|>")
-
-
 def parse_sam_text(text: str) -> list[dict[str, Any]]:
-    """Parse SAM's frame text into ``[{frame, id, bbox, conf}]``.
+    """Parse SAM's streamed text into ``[{frame, id, bbox, conf, mask}]``.
 
-    Grammar (dev.meta.ai/docs/sam/reading-segmentation): ``<Nf>`` frame marker,
-    then ``id<|box;x1=..;y1=..;x2=..;y2=..;w=..;h=..[;c=..]|><|mask;...|>``
-    records. Frames may be skipped or out of order; ids are stable per track.
-    Masks are ignored.
+    ``mask`` is a :class:`meta_sam_parser.SegmentationMask` (box-local) or None.
+    Frames may be skipped or out of order; ids are stable per track.
     """
-    out: list[dict[str, Any]] = []
-    chunks = _FRAME_RE.split(text)
-    # split → [prefix, frame, body, frame, body, ...]
-    for i in range(1, len(chunks) - 1, 2):
-        frame = int(chunks[i])
-        for m in _BOX_RE.finditer(chunks[i + 1]):
-            fields = dict(kv.split("=", 1) for kv in m.group(2).split(";") if "=" in kv)
-            try:
-                bbox = [int(float(fields[k])) for k in ("x1", "y1", "x2", "y2")]
-            except KeyError:
-                continue
-            out.append({
-                "frame": frame,
-                "id": int(m.group(1)),
-                "bbox": bbox,
-                "conf": float(fields.get("c", 1.0)),
-            })
-    return out
+    from meta_sam_parser import video_segmentation_format
+
+    snaps = video_segmentation_format().create_parser().push(text + "\n")
+    records = snaps[-1].records if snaps else ()
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for r in records:
+        if r.kind not in ("box", "mask"):
+            continue
+        frame = r.frame.frame_index if r.frame is not None else 0
+        d = out.setdefault((frame, r.object_id), {
+            "frame": frame, "id": int(r.object_id), "bbox": None, "conf": 1.0, "mask": None,
+        })
+        if r.confidence is not None:
+            d["conf"] = float(r.confidence)
+        if r.kind == "box":
+            d["bbox"] = [int(r.left), int(r.top), int(r.right), int(r.bottom)]
+        else:
+            d["mask"] = r.mask
+    return [d for d in out.values() if d["bbox"] is not None]
+
+
+def mask_to_frame(det: dict[str, Any], shape: tuple[int, ...]) -> np.ndarray:
+    """Full-frame uint8 mask (0/1) for a detection whose mask is box-local."""
+    from meta_sam_parser import decode_mask_to_raster
+
+    full = np.zeros(shape[:2], np.uint8)
+    m = det.get("mask")
+    if m is None:
+        return full
+    local = np.frombuffer(decode_mask_to_raster(m), np.uint8).reshape(m.height, m.width)
+    x1, y1 = det["bbox"][0], det["bbox"][1]
+    h = min(m.height, shape[0] - y1)
+    w = min(m.width, shape[1] - x1)
+    full[y1:y1 + h, x1:x1 + w] = local[:h, :w]
+    return full
 
 
 def _data_url(jpeg: bytes) -> str:

@@ -5,3 +5,4 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 httpx>=0.25
+meta-sam-parser==0.1.0

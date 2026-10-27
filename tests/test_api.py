@@ -49,18 +49,25 @@ def test_get_client_factory():
     assert "test_clip_123" in str(client.cache_dir)
 
 
-def test_parse_sam_text_frames_ids_boxes():
-    from goal_explainer.api import parse_sam_text
-    text = (
-        "<0f>0<|box;x1=181;y1=365;x2=556;y2=486;w=1516;h=1600|><|mask;x=0;y=0;data=122,376,~ab|>,"
-        "3<|box;x1=1;y1=2;x2=3;y2=4;w=10;h=10;c=0.9|><|mask;x=0;y=0;data=1,1,!z|>\n"
-        "<2f>3<|box;x1=5;y1=6;x2=7;y2=8;w=10;h=10|>\n"
-    )
-    dets = parse_sam_text(text)
+# Real SAM 3.1 output ("soccer goal" on an 848x478 frame): two objects with masks.
+_SAM_GOALS = (
+    "<0f>0<|box;x1=153;y1=147;x2=198;y2=160;w=848;h=478;c=0.7344398498535156|><|mask;x=0;y=0;c=0.7344398498535156;data=14,46,!!!!!=I5eKRjowgB.ozFUQ'M$jh0cHe=lS-V|>,"
+    "1<|box;x1=483;y1=292;x2=563;y2=341;w=848;h=478;c=0.9298245906829834|><|mask;x=0;y=0;c=0.9298245906829834;data=50,81,!!!!!YCcewx.s{`_gc_9fMt)N%3K!JXWKXqaLl4daU6y8[$q-HLsh7Kz8I&[%6)a9Iv52W|>\n"
+)
+
+
+def test_parse_sam_text_and_masks():
+    from goal_explainer.api import mask_to_frame, parse_sam_text
+    dets = sorted(parse_sam_text(_SAM_GOALS), key=lambda d: d["id"])
+    # boxes are half-open: SAM's inclusive x2/y2 + 1
     assert [(d["frame"], d["id"], d["bbox"]) for d in dets] == [
-        (0, 0, [181, 365, 556, 486]), (0, 3, [1, 2, 3, 4]), (2, 3, [5, 6, 7, 8]),
+        (0, 0, [153, 147, 199, 161]), (0, 1, [483, 292, 564, 342]),
     ]
-    assert dets[1]["conf"] == 0.9 and dets[0]["conf"] == 1.0
+    assert abs(dets[1]["conf"] - 0.9298) < 1e-3
+    m = mask_to_frame(dets[1], (478, 848))
+    ys, xs = m.nonzero()
+    assert m.shape == (478, 848) and len(xs) > 500
+    assert xs.min() >= 483 and xs.max() < 564 and ys.min() >= 292 and ys.max() < 342
     assert parse_sam_text("") == []
 
 

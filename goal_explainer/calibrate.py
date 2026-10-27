@@ -53,8 +53,7 @@ class CalibrationError(Exception):
 # Constants
 # ---------------------------------------------------------------------------
 
-_REPROJ_ERROR_THRESHOLD = 15.0   # pixels — above this the frame is unreliable
-_DRIFT_CORRECTION_INTERVAL = 30  # correct drift every N frames
+_REFIT_EVERY = 15               # frames between SAM region re-fits (~0.5 s)
 _HOUGH_MIN_LINE_LEN = 60        # minimum pixel length for Hough segments
 _HOUGH_MAX_LINE_GAP = 15        # max gap within a single segment
 _ORB_NFEATURES = 2000
@@ -413,40 +412,226 @@ def manual_calibration(
 
 
 # ---------------------------------------------------------------------------
+# Path (a): SAM 3.1 pitch regions + template fitting
+# ---------------------------------------------------------------------------
+
+# Text prompt → template polygons (pitch metres) that the SAM mask should cover.
+_PA = [(88.5, 13.84), (105.0, 13.84), (105.0, 54.16), (88.5, 54.16)]
+_FIELD = [(0.0, 0.0), (105.0, 0.0), (105.0, 68.0), (0.0, 68.0)]
+_CIRCLE = [(52.5 + 9.15 * np.cos(t), 34 + 9.15 * np.sin(t)) for t in np.linspace(0, 2 * np.pi, 48, endpoint=False)]
+REGION_TEMPLATES: dict[str, list[list[tuple[float, float]]]] = {
+    "soccer field": [_FIELD],
+    # both boxes: SAM may return the near one, the far one, or both
+    "penalty box": [_PA, [(105.0 - x, y) for x, y in _PA]],
+    "center circle": [_CIRCLE],
+}
+_REGION_WEIGHTS = {"soccer field": 1.0, "penalty box": 2.0, "center circle": 1.0}
+_FIT_WIDTH = 320  # masks are compared at this width; plenty for a homography
+# Goals break the template's 90° ambiguity: a goal's base must sit on a goal-line centre.
+_GOAL_PROMPT = "soccer goal"
+_GOAL_CENTRES = np.array([[[0.0, 34.0]], [[105.0, 34.0]]])
+_GOAL_WEIGHT = 0.5
+# Between refits the camera moves little, so a fit far from the tracked estimate is suspect.
+_PRIOR_WEIGHT = 0.3
+_PRIOR_GRID = np.array([[[x, y]] for x in (0.0, 52.5, 105.0) for y in (0.0, 34.0, 68.0)])
+_ORIENT_AT = (96.75, 34.0)  # centre of the right penalty box
+
+
+def sam_regions(client, frame: np.ndarray) -> dict[str, np.ndarray]:
+    """SAM 3.1 masks (uint8 0/1, frame size) for each prompt in REGION_TEMPLATES."""
+    from .api import mask_to_frame, parse_sam_text
+    from .track import jpeg
+
+    regions: dict[str, np.ndarray] = {}
+    img = jpeg(frame, max_side=max(frame.shape[:2]))
+    for prompt in [*REGION_TEMPLATES, _GOAL_PROMPT]:
+        dets = [d for d in parse_sam_text(client.sam(prompt, image_jpeg=img)) if d["conf"] >= 0.5]
+        if dets:
+            regions[prompt] = np.maximum.reduce([mask_to_frame(d, frame.shape) for d in dets])
+    return regions
+
+
+def _render(H: np.ndarray, polys: list[list[tuple[float, float]]], shape: tuple[int, int]) -> np.ndarray:
+    out = np.zeros(shape, np.uint8)
+    for poly in polys:
+        pts = cv2.perspectiveTransform(np.array(poly, np.float64).reshape(-1, 1, 2), H)
+        if not np.isfinite(pts).all() or np.abs(pts).max() > 1e5:
+            continue
+        cv2.fillPoly(out, [np.round(pts).astype(np.int32)], 1)
+    return out
+
+
+def region_cost(H: np.ndarray, small: dict[str, np.ndarray]) -> float:
+    """Weighted mean of (1 − IoU) between projected template regions and SAM masks."""
+    total = wsum = 0.0
+    for name, mask in small.items():
+        if name not in REGION_TEMPLATES:
+            continue
+        proj = _render(H, REGION_TEMPLATES[name], mask.shape)
+        union = np.count_nonzero(proj | mask)
+        iou = np.count_nonzero(proj & mask) / union if union else 0.0
+        total += _REGION_WEIGHTS[name] * (1.0 - iou)
+        wsum += _REGION_WEIGHTS[name]
+    return total / wsum if wsum else 1.0
+
+
+def _keeps_orientation(H: np.ndarray, at: tuple[float, float] = _ORIENT_AT) -> bool:
+    """True if H maps pitch → image without mirroring.
+
+    Pitch y grows up, image y grows down, so a camera looking at the pitch from
+    above gives a negative Jacobian determinant. Mirrored fits match the masks
+    equally well (the template is symmetric), so they are dropped here.
+    """
+    pts = np.array([[at, (at[0] + 1, at[1]), (at[0], at[1] + 1)]], np.float64)
+    p = cv2.perspectiveTransform(pts, H)[0]
+    a, b = p[1] - p[0], p[2] - p[0]
+    return float(a[0] * b[1] - a[1] * b[0]) < 0
+
+
+def _quad(mask: np.ndarray) -> np.ndarray | None:
+    """Four corners (cyclic order) of the largest blob in *mask*, or None."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    hull = cv2.convexHull(max(cnts, key=cv2.contourArea))
+    peri = cv2.arcLength(hull, True)
+    for eps in np.linspace(0.01, 0.1, 19):
+        approx = cv2.approxPolyDP(hull, eps * peri, True)
+        if len(approx) == 4:
+            return approx.reshape(4, 2).astype(np.float32)
+    return None
+
+
+def _quad_candidates(quad: np.ndarray, template: list[tuple[float, float]]) -> list[np.ndarray]:
+    """All 8 corner assignments (4 rotations × 2 directions) of *quad* to *template*."""
+    src = np.array(template, np.float32)
+    out = []
+    for order in (quad, quad[::-1].copy()):
+        for k in range(4):
+            H = cv2.getPerspectiveTransform(src, np.roll(order, k, axis=0))
+            if H is not None and np.isfinite(H).all():
+                out.append(H)
+    return out
+
+
+def _goal_bases(mask: np.ndarray) -> np.ndarray:
+    """Bottom-centre pixel of each goal blob, shape (n, 1, 2)."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+    pts = [[[stats[i, 0] + stats[i, 2] / 2, stats[i, 1] + stats[i, 3]]] for i in range(1, n)]
+    return np.array(pts, np.float64).reshape(-1, 1, 2)
+
+
+def _project_ok(pts: np.ndarray, H: np.ndarray) -> np.ndarray | None:
+    p = cv2.perspectiveTransform(pts, H)
+    return p if np.isfinite(p).all() else None
+
+
+def fit_cost(
+    H: np.ndarray,
+    small: dict[str, np.ndarray],
+    goals: np.ndarray,
+    prior: np.ndarray | None,
+) -> float:
+    """Region (1 − IoU) cost plus penalties for misplaced goals and jumps away from *prior*."""
+    width = next(iter(small.values())).shape[1]
+    cost = region_cost(H, small)
+    if len(goals):
+        centres = _project_ok(_GOAL_CENTRES, H)
+        if centres is None:
+            return 2.0
+        d = np.linalg.norm(goals[:, None, 0, :] - centres[None, :, 0, :], axis=2).min(axis=1)
+        cost += _GOAL_WEIGHT * float(np.minimum(1.0, d / (0.1 * width)).mean())
+    if prior is not None:
+        a, b = _project_ok(_PRIOR_GRID, prior), _project_ok(_PRIOR_GRID, H)
+        if a is None or b is None:
+            return 2.0
+        d = np.linalg.norm(a - b, axis=2).ravel()
+        cost += _PRIOR_WEIGHT * float(np.minimum(1.0, np.median(d) / (0.2 * width)))
+    return cost
+
+
+def fit_regions(
+    regions: dict[str, np.ndarray],
+    extra_candidates: list[np.ndarray] = (),
+    prior: np.ndarray | None = None,
+) -> tuple[np.ndarray, float] | None:
+    """Best pitch → image homography for the SAM *regions*, with its region cost (0 = perfect).
+
+    *prior* (e.g. the tracked homography of this frame) penalises fits that jump away from it.
+    """
+    if "penalty box" not in regions and "soccer field" not in regions:
+        return None
+    h, w = next(iter(regions.values())).shape
+    s = _FIT_WIDTH / w
+    S = np.diag([s, s, 1.0])
+    size = (_FIT_WIDTH, max(1, round(h * s)))
+    small = {k: cv2.resize(m, size, interpolation=cv2.INTER_NEAREST) for k, m in regions.items()}
+    goals = _goal_bases(small[_GOAL_PROMPT]) if _GOAL_PROMPT in small else np.zeros((0, 1, 2))
+    prior_s = S @ prior if prior is not None else None
+
+    candidates = list(extra_candidates) + ([prior] if prior is not None else [])
+    for name, template in (("penalty box", _PA), ("soccer field", _FIELD)):
+        q = _quad(regions[name]) if name in regions else None
+        if q is not None:
+            candidates += _quad_candidates(q, template)
+    candidates = [H for H in candidates if _keeps_orientation(H)]
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda H: fit_cost(S @ H, small, goals, prior_s))
+
+    # Refine by moving the image positions of 4 anchor points (well conditioned, in px).
+    anchors = np.array(_PA, np.float32)
+    x0 = cv2.perspectiveTransform(anchors.reshape(-1, 1, 2).astype(np.float64), S @ best).reshape(-1)
+
+    def to_h(x: np.ndarray) -> np.ndarray:
+        return cv2.getPerspectiveTransform(anchors, x.reshape(4, 2).astype(np.float32))
+
+    def cost(x: np.ndarray) -> float:
+        Hs = to_h(x)
+        return fit_cost(Hs, small, goals, prior_s) if _keeps_orientation(Hs) else 2.0
+
+    res = optimize.minimize(cost, x0, method="Nelder-Mead",
+                            options={"xatol": 0.2, "fatol": 1e-4, "maxiter": 1500})
+    x = res.x if res.fun <= cost(x0) else x0
+    return np.linalg.inv(S) @ to_h(x), region_cost(to_h(x), small)
+
+
+# ---------------------------------------------------------------------------
 # Initial homography (orchestrates paths a → b → raise)
 # ---------------------------------------------------------------------------
+
+_REGION_COST_OK = 0.45  # mean (1 − IoU). Good fits score ~0.1–0.35: SAM's field mask includes the green run-off
 
 
 def compute_initial_homography(
     client,
     frame: np.ndarray,
     tracks_frame: dict | None = None,
-) -> tuple[np.ndarray, str]:
-    """Try automatic calibration paths (a then b) and return *(H, method)*.
+) -> tuple[np.ndarray, str, float | None]:
+    """Automatic calibration: SAM regions (seeded by Spark keypoints), then Hough.
 
     Raises
     ------
     CalibrationError
-        If both paths fail — the Gradio UI should then offer path (c).
+        If no path works — the UI then offers the manual 4-point path (c).
     """
-    # --- Path (a): Muse Spark ---
+    seeds: list[np.ndarray] = []
     spark_kps = detect_keypoints_spark(client, frame)
     if spark_kps is not None:
-        # Match Spark keypoints to known pitch coordinates
-        matched_px: list[tuple[float, float]] = []
-        matched_pitch: list[tuple[float, float]] = []
-        for name, px_xy in spark_kps.items():
-            if name in PITCH_KEYPOINTS:
-                matched_px.append(px_xy)
-                matched_pitch.append(PITCH_KEYPOINTS[name])
-
-        if len(matched_px) >= 4:
-            src = np.array(matched_pitch, dtype=np.float64)
-            dst = np.array(matched_px, dtype=np.float64)
-            H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+        pairs = [(PITCH_KEYPOINTS[n], px) for n, px in spark_kps.items() if n in PITCH_KEYPOINTS]
+        if len(pairs) >= 4:
+            H, _ = cv2.findHomography(np.array([p for p, _ in pairs], np.float64),
+                                      np.array([q for _, q in pairs], np.float64), cv2.RANSAC, 5.0)
             if H is not None:
-                logger.info("Initial homography via Spark (%d keypoints).", len(matched_px))
-                return H, "spark"
+                seeds.append(H)
+
+    # --- Path (a): SAM regions; Spark keypoints are only an extra starting point ---
+    fit = fit_regions(sam_regions(client, frame), seeds)
+    if fit is not None:
+        H, cost = fit
+        logger.info("Region fit cost %.3f", cost)
+        if cost <= _REGION_COST_OK:
+            return H, "sam_regions", cost
 
     # --- Path (b): Hough lines + template matching ---
     lines = detect_lines_hough(frame)
@@ -454,11 +639,10 @@ def compute_initial_homography(
         H_hough = match_lines_to_template(lines, PITCH_KEYPOINTS)
         if H_hough is not None:
             logger.info("Initial homography via Hough line matching.")
-            return H_hough, "hough"
+            return H_hough, "hough", None
 
     raise CalibrationError(
-        "Automatic calibration failed (paths a and b). "
-        "Use manual_calibration() with 4+ clicked points."
+        "Automatic calibration failed. Use manual_calibration() with 4+ clicked points."
     )
 
 
@@ -538,175 +722,12 @@ def track_homography_orb(
 # ---------------------------------------------------------------------------
 
 
-def _white_line_mask(frame: np.ndarray) -> np.ndarray:
-    """Create a binary mask of white pitch-line pixels."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (0, 0, 180), (180, 60, 255))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    return mask
-
-
-def _project_pitch_lines(
-    H: np.ndarray,
-    img_shape: tuple[int, int],
-) -> np.ndarray:
-    """Render projected pitch template lines as a binary mask.
-
-    Parameters
-    ----------
-    H
-        Homography mapping pitch metres → image pixels.
-    img_shape
-        (height, width) of the target image.
-
-    Returns
-    -------
-    np.ndarray
-        uint8 binary mask (255 on projected lines).
-    """
-    canvas = np.zeros(img_shape[:2], dtype=np.uint8)
-
-    for seg in PITCH_LINES:
-        # Each line is ((x1_m, y1_m), (x2_m, y2_m)) in pitch metres
-        pts_pitch = np.array([[seg[0], seg[1]]], dtype=np.float64).reshape(-1, 1, 2)
-        pts_pitch2 = np.array([[seg[2], seg[3]]], dtype=np.float64).reshape(-1, 1, 2)
-
-        pt1 = cv2.perspectiveTransform(pts_pitch, H).reshape(2).astype(int)
-        pt2 = cv2.perspectiveTransform(pts_pitch2, H).reshape(2).astype(int)
-
-        cv2.line(canvas, tuple(pt1), tuple(pt2), 255, 2)
-
-    return canvas
-
-
-def correct_drift(
-    frame: np.ndarray,
-    H: np.ndarray,
-    pitch_lines: list[tuple[float, float, float, float]] | None = None,
-) -> np.ndarray:
-    """Refine *H* so that projected pitch lines align with detected white lines.
-
-    Uses ``scipy.optimize.minimize`` (Nelder–Mead) to minimise the sum of
-    distance-transform values at the projected line positions.
-
-    Parameters
-    ----------
-    frame
-        Current BGR frame.
-    H
-        Current homography estimate (pitch → image).
-    pitch_lines
-        Override for ``PITCH_LINES``; unused when *None*.
-
-    Returns
-    -------
-    np.ndarray
-        Refined 3×3 homography.
-    """
-    h_img, w_img = frame.shape[:2]
-
-    # Detected white lines → distance transform
-    line_mask = _white_line_mask(frame)
-    dist_transform = cv2.distanceTransform(255 - line_mask, cv2.DIST_L2, 5)
-
-    # Sample points along template lines in pitch coordinates
-    sample_pts_pitch: list[tuple[float, float]] = []
-    lines_src = pitch_lines if pitch_lines is not None else PITCH_LINES
-    for seg in lines_src:
-        x1, y1, x2, y2 = seg
-        for alpha in np.linspace(0, 1, 20):
-            sample_pts_pitch.append((
-                x1 + alpha * (x2 - x1),
-                y1 + alpha * (y2 - y1),
-            ))
-
-    pts_pitch = np.array(sample_pts_pitch, dtype=np.float64).reshape(-1, 1, 2)
-
-    def _cost(params: np.ndarray) -> float:
-        """Cost = mean distance-transform value at projected sample points."""
-        H_trial = params.reshape(3, 3)
-        # Normalise so H[2,2] == 1
-        if abs(H_trial[2, 2]) < 1e-12:
-            return 1e6
-        H_trial = H_trial / H_trial[2, 2]
-
-        try:
-            projected = cv2.perspectiveTransform(pts_pitch, H_trial).reshape(-1, 2)
-        except cv2.error:
-            return 1e6
-
-        total = 0.0
-        count = 0
-        for px, py in projected:
-            ix, iy = int(round(px)), int(round(py))
-            if 0 <= ix < w_img and 0 <= iy < h_img:
-                total += dist_transform[iy, ix]
-                count += 1
-
-        return total / max(count, 1)
-
-    x0 = H.flatten()
-    result = optimize.minimize(
-        _cost,
-        x0,
-        method="Nelder-Mead",
-        options={"maxiter": 300, "xatol": 1e-5, "fatol": 0.1},
-    )
-
-    H_refined = result.x.reshape(3, 3)
-    H_refined = H_refined / H_refined[2, 2]
-    logger.debug("Drift correction: cost %.2f → %.2f", _cost(x0), result.fun)
-    return H_refined
 
 
 # ---------------------------------------------------------------------------
 # Reprojection error
 # ---------------------------------------------------------------------------
 
-
-def compute_reprojection_error(
-    frame: np.ndarray,
-    H: np.ndarray,
-) -> float:
-    """Average distance (px) from projected pitch lines to nearest detected white line.
-
-    A low value (< ~10 px) indicates good calibration.
-    """
-    h_img, w_img = frame.shape[:2]
-
-    line_mask = _white_line_mask(frame)
-    dist_transform = cv2.distanceTransform(255 - line_mask, cv2.DIST_L2, 5)
-
-    # Sample along pitch lines
-    sample_pts: list[tuple[float, float]] = []
-    for seg in PITCH_LINES:
-        x1, y1, x2, y2 = seg
-        for alpha in np.linspace(0, 1, 30):
-            sample_pts.append((
-                x1 + alpha * (x2 - x1),
-                y1 + alpha * (y2 - y1),
-            ))
-
-    if not sample_pts:
-        return float("inf")
-
-    pts = np.array(sample_pts, dtype=np.float64).reshape(-1, 1, 2)
-    try:
-        projected = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
-    except cv2.error:
-        return float("inf")
-
-    distances: list[float] = []
-    for px, py in projected:
-        ix, iy = int(round(px)), int(round(py))
-        if 0 <= ix < w_img and 0 <= iy < h_img:
-            distances.append(float(dist_transform[iy, ix]))
-
-    if not distances:
-        return float("inf")
-
-    return float(np.mean(distances))
 
 
 # ---------------------------------------------------------------------------
@@ -784,9 +805,11 @@ def run(
         frames_list = data["frames"] if isinstance(data, dict) else data
         tracks_by_idx = {tf["frame_idx"]: tf for tf in frames_list}
 
+    client = get_client(clip_id)
     results: list[HomographyResult] = []
     H_prev: np.ndarray | None = None
     prev_frame: np.ndarray | None = None
+    cost = 1.0
 
     for i, frame in enumerate(iter_frames(video_path)):
         if i == 0:
@@ -798,29 +821,33 @@ def run(
                     [tuple(p["px"]) for p in manual_points],
                     [tuple(p["pitch"]) for p in manual_points],
                 )
-                m = "manual"
+                m, cost = "manual", None
             else:
                 # Paths (a) then (b) — raises CalibrationError so the UI can offer (c)
-                H_curr, m = compute_initial_homography(
-                    get_client(clip_id), frame, tracks_by_idx.get(0),
-                )
+                H_curr, m, cost = compute_initial_homography(client, frame, tracks_by_idx.get(0))
         else:
-            # --- Step 2: ORB propagation ---
+            # --- Step 2: ORB propagation between refits ---
             orb_mask = _player_mask_from_tracks(tracks_by_idx.get(i - 1), frame.shape)
             H_curr = track_homography_orb(prev_frame, frame, H_prev, mask=orb_mask)
             m = "orb"
-            # --- Step 3: Periodic drift correction ---
-            if i % _DRIFT_CORRECTION_INTERVAL == 0:
-                H_curr = correct_drift(frame, H_curr)
 
-        # --- Step 4: Error & reliability ---
-        err = compute_reprojection_error(frame, H_curr)
+        # --- Step 3: Re-fit to SAM pitch regions (removes ORB drift), seeded with H_curr ---
+        if i % _REFIT_EVERY == 0 and (i > 0 or cost is None):
+            fit = fit_regions(sam_regions(client, frame), prior=H_curr if i > 0 else None,
+                              extra_candidates=[H_curr])
+            if fit is not None and fit[1] <= _REGION_COST_OK:
+                H_curr, cost = fit
+                m = m if i == 0 else "sam_regions"
+            elif cost is not None:
+                cost = fit[1] if fit is not None else 1.0
+
+        # --- Step 4: Reliability = how well the template covers SAM's regions at the last fit ---
         results.append(HomographyResult(
             frame_idx=i,
             H=H_curr.tolist(),
             method=m,
-            error=round(err, 3),
-            reliable=err < _REPROJ_ERROR_THRESHOLD,
+            error=round(cost, 3) if cost is not None else 0.0,
+            reliable=cost is None or cost <= _REGION_COST_OK,
         ))
         H_prev, prev_frame = H_curr, frame
 
@@ -833,8 +860,5 @@ def run(
         json.dump(results, fh, indent=2, ensure_ascii=False)
 
     n_reliable = sum(1 for r in results if r["reliable"])
-    logger.info(
-        "Homography saved to %s — %d/%d frames reliable (threshold %.1f px).",
-        out_path, n_reliable, len(results), _REPROJ_ERROR_THRESHOLD,
-    )
+    logger.info("Homography saved to %s — %d/%d frames reliable.", out_path, n_reliable, len(results))
     return out_path

@@ -6,9 +6,9 @@ import pytest
 
 from goal_explainer.calibrate import (
     manual_calibration,
-    compute_reprojection_error,
-    _white_line_mask,
-    detect_lines_hough,
+    REGION_TEMPLATES,
+    _render,
+    fit_regions,
 )
 
 
@@ -35,23 +35,46 @@ def test_manual_calibration_insufficient_points():
         manual_calibration(dummy_frame, [(0, 0), (1, 1)], [(0, 0), (1, 1)])
 
 
-def test_white_line_mask():
-    frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    # Green background
-    frame[:, :] = (34, 139, 34)
-    # White horizontal line
-    frame[48:52, :] = (255, 255, 255)
+def test_fit_regions_recovers_known_homography():
+    # Regions rendered from a known camera; the fit must find that camera again.
+    # Camera in the stands: whole pitch in front of it, far side narrower.
+    true_H = cv2.getPerspectiveTransform(
+        np.float32([[0, 0], [105, 0], [105, 68], [0, 68]]),
+        np.float32([[100, 420], [760, 420], [600, 150], [250, 150]]),
+    )
+    shape = (478, 848)
+    regions = {name: _render(true_H, polys, shape) for name, polys in REGION_TEMPLATES.items()}
+    H, cost = fit_regions(regions)
+    assert cost < 0.05
+    probe = np.array([[[96.75, 34.0]], [[52.5, 34.0]], [[94.0, 34.0]]], np.float64)
+    got = cv2.perspectiveTransform(probe, H)
+    want = cv2.perspectiveTransform(probe, true_H)
+    # The pitch is symmetric under a half turn, so that fit is equally right.
+    half_turn = np.array([[-1, 0, 105], [0, -1, 68], [0, 0, 1]], np.float64)
+    want_turned = cv2.perspectiveTransform(probe, true_H @ half_turn)
+    assert min(np.abs(got - want).max(), np.abs(got - want_turned).max()) < 6.0  # px
 
-    mask = _white_line_mask(frame)
-    assert mask.shape == (100, 100)
-    assert mask[50, 50] > 0
-    assert mask[10, 10] == 0
+
+def test_fit_regions_needs_box_or_field():
+    assert fit_regions({"center circle": np.ones((10, 10), np.uint8)}) is None
 
 
-def test_reprojection_error_on_black_frame():
-    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    # Identity homography
-    H = np.eye(3)
-    err = compute_reprojection_error(frame, H)
-    assert isinstance(err, float)
-    assert err >= 0.0
+def test_goals_break_quarter_turn_ambiguity():
+    # Like a frame where fans hide the penalty box: field + circle alone also fit a
+    # 90°-turned pitch; the goal mask must pull the fit back.
+    true_H = cv2.getPerspectiveTransform(
+        np.float32([[0, 0], [105, 0], [105, 68], [0, 68]]),
+        np.float32([[100, 420], [760, 420], [600, 150], [250, 150]]),
+    )
+    shape = (478, 848)
+    regions = {n: _render(true_H, REGION_TEMPLATES[n], shape) for n in ("soccer field", "center circle")}
+    goal = np.zeros(shape, np.uint8)
+    base = cv2.perspectiveTransform(np.array([[[105.0, 34.0]]]), true_H)[0, 0]
+    cv2.rectangle(goal, (int(base[0]) - 15, int(base[1]) - 20), (int(base[0]) + 15, int(base[1])), 1, -1)
+    regions["soccer goal"] = goal
+    H, _ = fit_regions(regions)
+    probe = np.array([[[105.0, 34.0]], [[52.5, 0.0]]], np.float64)
+    got = cv2.perspectiveTransform(probe, H)
+    half_turn = np.array([[-1, 0, 105], [0, -1, 68], [0, 0, 1]], np.float64)
+    errs = [np.abs(got - cv2.perspectiveTransform(probe, G)).max() for G in (true_H, true_H @ half_turn)]
+    assert min(errs) < 15.0  # px
