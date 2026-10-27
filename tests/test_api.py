@@ -83,3 +83,33 @@ def test_load_dotenv(tmp_path, monkeypatch):
     assert os.environ["GE_TEST_KEY"] == "abc"
     assert os.environ["GE_TEST_OTHER"] == "x=y"
     assert os.environ["GE_TEST_SET"] == "fromenv"
+
+
+def test_build_prompts_skips_unknown_and_shared_colours():
+    from goal_explainer.track import build_prompts
+    kits = {"team_a": "white", "team_b": "black", "goalkeeper_a": "yellow",
+            "goalkeeper_b": "white", "referee": "unknown"}
+    assert build_prompts(kits) == [
+        ("soccer ball", "ball", None),
+        ("player in white", "player", "A"),
+        ("player in black", "player", "B"),
+        ("player in yellow", "goalkeeper", "A"),
+    ]
+
+
+def test_find_duplicates_and_drop_boxes():
+    from goal_explainer.track import drop_boxes, find_duplicates
+    def frame(i, objs):
+        return {"frame_idx": i, "timestamp": i / 25, "objects": objs}
+    keeper_as_white = {"object_id": 1009, "cls": "player", "bbox": [100, 100, 120, 150]}
+    keeper = {"object_id": 4000, "cls": "goalkeeper", "bbox": [101, 101, 121, 151]}
+    other = {"object_id": 1001, "cls": "player", "bbox": [300, 100, 320, 150]}
+    same_prompt = {"object_id": 1002, "cls": "player", "bbox": [300, 100, 320, 150]}  # same prompt: never a pair
+    tracks = [frame(i, [dict(keeper_as_white), dict(keeper), dict(other), dict(same_prompt)]) for i in range(6)]
+    tracks.append(frame(6, [dict(keeper_as_white)]))  # outside the overlap: must survive
+    assert find_duplicates(tracks[:4]) == {}  # 4 frames: two players briefly crossing
+    pairs = find_duplicates(tracks)
+    assert pairs == {(1009, 4000): [0, 1, 2, 3, 4, 5]}
+    drop_boxes(tracks, 1009, pairs[(1009, 4000)])
+    assert all(o["object_id"] != 1009 for tf in tracks[:6] for o in tf["objects"])
+    assert [o["object_id"] for o in tracks[6]["objects"]] == [1009]

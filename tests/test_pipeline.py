@@ -57,7 +57,7 @@ def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
 
     # 2. Create synthetic homography.json
     # H is identity matrix (1px = 1m offset for testing)
-    H_eye = np.eye(3).tolist()
+    H_eye = np.diag([4.0, 4.0, 1.0]).tolist()  # 4 px per metre: fixture pixels land on the pitch
     homography_data = {
         "fps": 25.0,
         "method": "c_manual",

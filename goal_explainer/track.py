@@ -2,8 +2,9 @@
 Step 1 — Object tracking with SAM 3.1.
 
 SAM 3.1 takes one short noun phrase per request and tracks ≤16 objects, so we
-send one request per class. Team comes from the prompt itself ("player in red
-shirt"); the two shirt colours are read from the first frame by Muse Spark.
+send one request per role. Team and role come from the prompt itself ("player in
+yellow"); the shirt colours of both teams, both keepers and the referee are read
+from the first frame by Muse Spark.
 """
 
 from __future__ import annotations
@@ -99,40 +100,52 @@ def jpeg(frame: np.ndarray, max_side: int = 1280) -> bytes:
 # Prompts
 # ---------------------------------------------------------------------------
 
-_SHIRT_SCHEMA = {
+_KIT_ROLES = ("team_a", "team_b", "goalkeeper_a", "goalkeeper_b", "referee")
+_KIT_SCHEMA = {
     "type": "object",
-    "properties": {
-        "team_a_shirt": {"type": "string"},
-        "team_b_shirt": {"type": "string"},
-    },
-    "required": ["team_a_shirt", "team_b_shirt"],
+    "properties": {f"{r}_shirt": {"type": "string"} for r in _KIT_ROLES},
+    "required": [f"{r}_shirt" for r in _KIT_ROLES],
     "additionalProperties": False,
 }
 
 
-def shirt_colours(client, first_frame: np.ndarray) -> tuple[str, str]:
-    """Ask Muse Spark for the two outfield shirt colours as 1–2 word phrases."""
+def kit_colours(client, frame: np.ndarray) -> dict[str, str]:
+    """Muse Spark's 1–2 word shirt colour per role, e.g. {"team_a": "white", ...}.
+
+    Roles it cannot see come back as "unknown". Needs a sharp frame: at ~15 px
+    per player (a messenger-compressed clip) it cannot see the keepers.
+    """
     r = client.spark_json(
-        "This is a football broadcast frame. Name the main shirt colour of each "
-        "team's outfield players (not goalkeepers or referees) in one or two "
-        "plain words each, e.g. 'red', 'light blue', 'white'.",
-        _SHIRT_SCHEMA,
-        images=[jpeg(first_frame)],
+        "This is a football match frame. Give the main shirt colour, in one or two "
+        "plain words (e.g. 'white', 'light blue'), of: team A's outfield players, "
+        "team B's outfield players, team A's goalkeeper, team B's goalkeeper "
+        "(goalkeepers wear a different colour from their team), and the referee. "
+        "Use 'unknown' if you cannot see one.",
+        _KIT_SCHEMA,
+        images=[jpeg(frame, max_side=max(frame.shape[:2]))],
     )
-    return r["team_a_shirt"].strip().lower(), r["team_b_shirt"].strip().lower()
+    return {role: r[f"{role}_shirt"].strip().lower() for role in _KIT_ROLES}
 
 
-def build_prompts(colour_a: str, colour_b: str) -> list[tuple[str, str, str | None]]:
-    """``(prompt, cls, team)`` triples, one SAM request each."""
-    # Tested on real footage: "football"/"football player" match nothing, and
-    # "soccer player in black shirt" misses a team that "player in black" finds.
-    return [
-        ("soccer ball", "ball", None),
-        ("goalkeeper", "goalkeeper", None),
-        (f"player in {colour_a}", "player", "A"),
-        (f"player in {colour_b}", "player", "B"),
-        ("referee", "referee", None),
-    ]
+def build_prompts(kits: dict[str, str]) -> list[tuple[str, str, str | None]]:
+    """``(prompt, cls, team)`` triples, one SAM request each.
+
+    Tested on real footage: "football", "football player" and "goalkeeper" match
+    nothing, and "soccer player in black shirt" misses a team that "player in
+    black" finds, so every person is found by shirt colour.
+    """
+    prompts = [("soccer ball", "ball", None)]
+    roles = [("team_a", "player", "A"), ("team_b", "player", "B"),
+             ("goalkeeper_a", "goalkeeper", "A"), ("goalkeeper_b", "goalkeeper", "B"),
+             ("referee", "referee", None)]
+    used: set[str] = set()
+    for role, cls, team in roles:
+        colour = kits.get(role, "unknown")
+        if colour == "unknown" or colour in used:
+            continue  # a shared colour would track the same people twice
+        used.add(colour)
+        prompts.append((f"player in {colour}", cls, team))
+    return prompts
 
 
 # ---------------------------------------------------------------------------
@@ -154,24 +167,67 @@ def keep_best_ball(tracks: list[TracksFrame]) -> None:
             tf["objects"] = [o for o in tf["objects"] if o["cls"] != "ball" or o is best]
 
 
-def assign_goalkeepers(tracks: list[TracksFrame], frame_w: int) -> None:
-    """Give each goalkeeper the team whose players stand on the same side of frame.
+def _iou(a: list[int], b: list[int]) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
 
-    shortcut: uses screen side, wrong if the camera pans across halfway; upgrade
-    to pitch-x side once homographies exist.
+
+_DUP_IOU = 0.5        # boxes from two prompts this close are the same person
+_DUP_MIN_FRAMES = 5   # shorter overlaps are two players briefly crossing
+
+
+def find_duplicates(tracks: list[TracksFrame]) -> dict[tuple[int, int], list[int]]:
+    """Id pairs from *different* prompts that box the same person → frames where they do.
+
+    E.g. a light-blue keeper that "player in white" also picks up from far away.
     """
-    xs: dict[str, list[float]] = {"A": [], "B": []}
+    pairs: dict[tuple[int, int], list[int]] = {}
     for tf in tracks:
-        for o in tf["objects"]:
-            if o["cls"] == "player" and o.get("team") in xs:
-                xs[o["team"]].append(o["foot_xy"][0])
-    if not xs["A"] or not xs["B"]:
-        return
-    left, right = sorted(("A", "B"), key=lambda t: float(np.mean(xs[t])))
-    for tf in tracks:
-        for o in tf["objects"]:
-            if o["cls"] == "goalkeeper":
-                o["team"] = left if o["foot_xy"][0] < frame_w / 2 else right
+        people = [o for o in tf["objects"] if o["cls"] != "ball"]
+        for i, a in enumerate(people):
+            for b in people[i + 1:]:
+                if a["object_id"] // 1000 != b["object_id"] // 1000 and _iou(a["bbox"], b["bbox"]) > _DUP_IOU:
+                    key = tuple(sorted((a["object_id"], b["object_id"])))
+                    pairs.setdefault(key, []).append(tf["frame_idx"])
+    return {k: v for k, v in pairs.items() if len(v) >= _DUP_MIN_FRAMES}
+
+
+def drop_boxes(tracks: list[TracksFrame], object_id: int, frames: list[int]) -> None:
+    """Remove *object_id* from the given frames only (it may be right elsewhere)."""
+    for f in frames:
+        tracks[f]["objects"] = [o for o in tracks[f]["objects"] if o["object_id"] != object_id]
+
+
+def pick_shirt(client, frame: np.ndarray, bbox: list[int], colours: list[str]) -> str:
+    """Ask Muse Spark which of *colours* the person in *bbox* wears."""
+    x1, y1, x2, y2 = bbox
+    pad_x, pad_y = (x2 - x1), (y2 - y1) // 2
+    crop = frame[max(0, y1 - pad_y):y2 + pad_y, max(0, x1 - pad_x):x2 + pad_x]
+    r = client.spark_json(
+        "Which shirt colour does the football player in the centre of this crop wear?",
+        {"type": "object", "properties": {"shirt": {"type": "string", "enum": colours}},
+         "required": ["shirt"], "additionalProperties": False},
+        images=[jpeg(crop, max_side=512)],
+    )
+    return r["shirt"]
+
+
+def resolve_duplicates(client, video_path: Path, tracks: list[TracksFrame],
+                       prompts: list[tuple[str, str, str | None]]) -> None:
+    """Keep one label per doubly-detected person, chosen by Muse Spark from a crop."""
+    colour_of = {pi: p.removeprefix("player in ") for pi, (p, _, _) in enumerate(prompts)}
+    for (a, b), frames in find_duplicates(tracks).items():
+        mid = frames[len(frames) // 2]
+        box = next(o["bbox"] for o in tracks[mid]["objects"] if o["object_id"] == a)
+        ca, cb = colour_of[a // 1000], colour_of[b // 1000]
+        winner = pick_shirt(client, read_frame(video_path, mid), box, [ca, cb])
+        loser = b if winner == ca else a
+        logger.info("Ids %d/%d box the same person in %d frames; Spark says %s, dropping %d",
+                    a, b, len(frames), winner, loser)
+        drop_boxes(tracks, loser, frames)
 
 
 def interpolate_ball(tracks: list[TracksFrame]) -> list[TracksFrame]:
@@ -243,8 +299,8 @@ def run(video_path: Path, clip_id: str) -> Path:
     first = read_frame(video_path, 0)
     client = get_client(clip_id)
 
-    colour_a, colour_b = shirt_colours(client, first)
-    prompts = build_prompts(colour_a, colour_b)
+    kits = kit_colours(client, first)
+    prompts = build_prompts(kits)
     file_id = client.upload_file(video_path)
 
     tracks: list[TracksFrame] = [
@@ -263,14 +319,15 @@ def run(video_path: Path, clip_id: str) -> Path:
             ))
 
     keep_best_ball(tracks)
-    assign_goalkeepers(tracks, first.shape[1])
+    resolve_duplicates(client, video_path, tracks, prompts)
     interpolate_ball(tracks)
 
     tracks_path = out_dir / "tracks.json"
     tracks_path.write_text(json.dumps({
         "fps": fps,
         "num_frames": n_frames,
-        "shirts": {"A": colour_a, "B": colour_b},
+        "shirts": {"A": kits["team_a"], "B": kits["team_b"]},
+        "kits": kits,
         "frames": tracks,
     }, ensure_ascii=False), encoding="utf-8")
     logger.info("Tracks written to %s (%d frames)", tracks_path, n_frames)

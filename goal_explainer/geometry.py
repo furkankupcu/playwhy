@@ -214,6 +214,7 @@ def build_positions(
     EXCLUDE_LABELS = {"referee", "pitch_line", "pitch_lines", "line", "ref"}
 
     positions: list[PlayerPosition] = []
+    keeper_frames_inside: dict[tuple[str, int], int] = {}  # (team, id) → frames inside the lines
     track_frames = tracks if isinstance(tracks, list) else tracks.get("frames", [])
     for frame in track_frames:
         fidx = frame["frame_idx"]
@@ -234,18 +235,35 @@ def build_positions(
                 else:
                     continue
             x_m, y_m = pixel_to_pitch(tuple(foot_xy), H)
+            # Substitutes warming up, ball boys and stewards wear kit colours too.
+            if not (-_OFF_PITCH_M <= x_m <= _PITCH_LENGTH + _OFF_PITCH_M
+                    and -_OFF_PITCH_M <= y_m <= _PITCH_WIDTH + _OFF_PITCH_M):
+                continue
+            pid = obj.get("object_id", obj.get("track_id", -1))
+            team = "ball" if label == "ball" else (obj.get("team") or "unknown")
+            if label == "goalkeeper":
+                inside = 0 <= x_m <= _PITCH_LENGTH and 0 <= y_m <= _PITCH_WIDTH
+                keeper_frames_inside[(team, pid)] = keeper_frames_inside.get((team, pid), 0) + inside
             positions.append(
                 PlayerPosition(
                     frame_idx=fidx,
                     timestamp=ts,
-                    player_id=obj.get("object_id", obj.get("track_id", -1)),
+                    player_id=pid,
                     # ball is told apart by team == "ball" downstream
-                    team="ball" if label == "ball" else (obj.get("team") or "unknown"),
+                    team=team,
                     x_m=x_m,
                     y_m=y_m,
                 )
             )
-    return positions
+
+    # One keeper per team: the keeper colour also matches substitutes warming up by
+    # the touchline, so keep the candidate seen inside the lines the longest.
+    best: dict[str, tuple[int, int]] = {}
+    for (team, pid), n in keeper_frames_inside.items():
+        if team not in best or n > best[team][1]:
+            best[team] = (pid, n)
+    not_keepers = {pid for (team, pid) in keeper_frames_inside if best[team][0] != pid}
+    return [p for p in positions if p.player_id not in not_keepers]
 
 
 def smooth_positions(
@@ -511,6 +529,7 @@ def compute_offside_line(
 _GOAL_WIDTH = 7.32          # metres (FIFA standard)
 _PITCH_LENGTH = 105.0       # metres (FIFA standard)
 _PITCH_WIDTH = 68.0         # metres (FIFA standard)
+_OFF_PITCH_M = 3.0          # people further outside the lines are not in play
 
 
 def detect_shots(

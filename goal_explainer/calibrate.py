@@ -54,6 +54,7 @@ class CalibrationError(Exception):
 # ---------------------------------------------------------------------------
 
 _REFIT_EVERY = 15               # frames between SAM region re-fits (~0.5 s)
+_CALIB_WIDTH = 1280             # calibration runs on frames at most this wide
 _HOUGH_MIN_LINE_LEN = 60        # minimum pixel length for Hough segments
 _HOUGH_MAX_LINE_GAP = 15        # max gap within a single segment
 _ORB_NFEATURES = 2000
@@ -811,14 +812,19 @@ def run(
     prev_frame: np.ndarray | None = None
     cost = 1.0
 
-    for i, frame in enumerate(iter_frames(video_path)):
+    for i, full in enumerate(iter_frames(video_path)):
+        # Work at ≤ _CALIB_WIDTH: SAM segments pitch regions badly on 4K input, and
+        # ORB on 4K is ~9× slower. H is scaled back to full resolution when saved.
+        s = min(1.0, _CALIB_WIDTH / full.shape[1])
+        frame = cv2.resize(full, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else full
+        to_full = np.diag([1 / s, 1 / s, 1.0])
         if i == 0:
             # --- Step 1: Initial homography on first frame ---
             if manual_points is not None and len(manual_points) >= 4:
-                # Path (c): manual. Points are {"px": [x, y], "pitch": [x_m, y_m]}.
+                # Path (c): manual. Points are {"px": [x, y], "pitch": [x_m, y_m]} in full-res px.
                 H_curr = manual_calibration(
                     frame,
-                    [tuple(p["px"]) for p in manual_points],
+                    [(p["px"][0] * s, p["px"][1] * s) for p in manual_points],
                     [tuple(p["pitch"]) for p in manual_points],
                 )
                 m, cost = "manual", None
@@ -827,7 +833,8 @@ def run(
                 H_curr, m, cost = compute_initial_homography(client, frame, tracks_by_idx.get(0))
         else:
             # --- Step 2: ORB propagation between refits ---
-            orb_mask = _player_mask_from_tracks(tracks_by_idx.get(i - 1), frame.shape)
+            orb_mask = cv2.resize(_player_mask_from_tracks(tracks_by_idx.get(i - 1), full.shape),
+                                  (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
             H_curr = track_homography_orb(prev_frame, frame, H_prev, mask=orb_mask)
             m = "orb"
 
@@ -844,7 +851,7 @@ def run(
         # --- Step 4: Reliability = how well the template covers SAM's regions at the last fit ---
         results.append(HomographyResult(
             frame_idx=i,
-            H=H_curr.tolist(),
+            H=(to_full @ H_curr).tolist(),
             method=m,
             error=round(cost, 3) if cost is not None else 0.0,
             reliable=cost is None or cost <= _REGION_COST_OK,

@@ -162,3 +162,25 @@ def test_open_lanes():
     assert len(lanes) == 1
     assert lanes[0].lane_clear is True
     assert lanes[0].nearest_opponent_dist == 20.0
+
+
+def test_build_positions_drops_people_off_the_pitch():
+    from goal_explainer.geometry import build_positions
+    H = np.eye(3)  # 1 px = 1 m
+    tracks = [{"frame_idx": 0, "timestamp": 0.0, "objects": [
+        {"object_id": 1, "cls": "player", "team": "A", "foot_xy": [50, 30]},
+        {"object_id": 2, "cls": "player", "team": "A", "foot_xy": [120, 30]},  # warming up behind the goal
+        {"object_id": 3, "cls": "goalkeeper", "team": "B", "foot_xy": [104, 34]},
+    ]}]
+    got = build_positions(tracks, [{"frame_idx": 0, "H": H.tolist()}])
+    assert sorted(p.player_id for p in got) == [1, 3]
+
+
+def test_build_positions_keeps_one_keeper_per_team():
+    from goal_explainer.geometry import build_positions
+    H = np.eye(3)  # 1 px = 1 m
+    keeper = {"object_id": 4000, "cls": "goalkeeper", "team": "B", "foot_xy": [70, 33]}
+    sub = {"object_id": 4001, "cls": "goalkeeper", "team": "B", "foot_xy": [8, -1]}  # warming up, 1 m outside
+    tracks = [{"frame_idx": i, "timestamp": i / 25, "objects": [dict(keeper), dict(sub)]} for i in range(5)]
+    got = build_positions(tracks, [{"frame_idx": i, "H": H.tolist()} for i in range(5)])
+    assert {p.player_id for p in got} == {4000}
