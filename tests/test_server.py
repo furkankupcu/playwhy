@@ -58,7 +58,8 @@ def test_result_shape(client, tmp_path):
     run = Path("runs") / cid
     assert client.get(f"/api/clips/{cid}/result").status_code == 409
     (run / "explanation.json").write_text(json.dumps({"claims": [], "summary": "s"}))
-    (run / "homography.json").write_text(json.dumps([{"reliable": True}, {"reliable": False}]))
+    eye = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    (run / "homography.json").write_text(json.dumps([{"reliable": True, "H": eye}, {"reliable": False, "H": eye}]))
     (run / "tracks.json").write_text(json.dumps({"shirts": {"A": "red", "B": "white"}, "frames": []}))
     body = client.get(f"/api/clips/{cid}/result").json()
     assert body["reliable_share"] == 0.5 and body["shirts"]["A"] == "red"
@@ -67,3 +68,11 @@ def test_result_shape(client, tmp_path):
     pts = [{"px": [1, 2], "pitch": [3, 4]}] * 3
     assert client.post(f"/api/clips/{cid}/calibrate", json={"points": pts}).status_code == 422
     assert client.post(f"/api/clips/{cid}/calibrate", json={"points": pts * 2}).status_code == 200
+
+
+def test_graph_video_404_until_rendered(client, tmp_path):
+    data = _clip(tmp_path / "e.mp4", 1)
+    cid = client.post("/api/clips", files={"file": ("e.mp4", data, "video/mp4")}).json()["clip_id"]
+    assert client.get(f"/api/clips/{cid}/graphs.mp4").status_code == 404
+    (Path("runs") / cid / "graphs.mp4").write_bytes(b"\x00")
+    assert client.get(f"/api/clips/{cid}/graphs.mp4").status_code == 200

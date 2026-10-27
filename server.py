@@ -164,12 +164,24 @@ def clip_result(clip_id: str) -> dict[str, Any]:
         "events": _read_json(run_dir / "events.json") or {},
         "cues": _read_json(run_dir / "cues.json") or [],
         "pitch": _read_json(run_dir / "pitch.json") or [],
+        # per-frame pitch → image homography, so the page can draw graphs on the video
+        "homographies": [h["H"] for h in homographies],
+        "graphs": _read_json(run_dir / "graphs.json"),
+        "graph_video": (run_dir / "graphs.mp4").is_file(),
     }
 
 
 @app.get("/api/clips/{clip_id}/video")
 def clip_video(clip_id: str) -> FileResponse:
     return FileResponse(_run_dir(clip_id) / "input.mp4", media_type="video/mp4")
+
+
+@app.get("/api/clips/{clip_id}/graphs.mp4")
+def graph_video(clip_id: str) -> FileResponse:
+    path = _run_dir(clip_id) / "graphs.mp4"
+    if not path.is_file():
+        raise HTTPException(404, "No graph video for this clip")
+    return FileResponse(path, media_type="video/mp4", filename=f"goal-explainer-{clip_id}.mp4")
 
 
 @app.get("/api/clips/{clip_id}/frame0.jpg")

@@ -184,3 +184,19 @@ def test_build_positions_keeps_one_keeper_per_team():
     tracks = [{"frame_idx": i, "timestamp": i / 25, "objects": [dict(keeper), dict(sub)]} for i in range(5)]
     got = build_positions(tracks, [{"frame_idx": i, "H": H.tolist()} for i in range(5)])
     assert {p.player_id for p in got} == {4000}
+
+
+def test_ground_ball_track_straightens_flight_between_touches():
+    from goal_explainer.geometry import PlayerPosition, ground_ball_track
+    fps = 10
+    players, ball = [], []
+    for i in range(11):
+        players.append(PlayerPosition(i, i / fps, 1, "A", 10.0, 10.0))
+        players.append(PlayerPosition(i, i / fps, 2, "A", 20.0, 10.0))
+        # touch at frame 0 (player 1) and frame 10 (player 2); in between the
+        # projected ball "flies" far off, as an airborne ball does
+        x, y = (10.0, 10.0) if i == 0 else (20.0, 10.0) if i == 10 else (40.0, 30.0)
+        ball.append(PlayerPosition(i, i / fps, -1, "ball", x, y))
+    ground_ball_track(ball, players)
+    assert ball[5].estimated and abs(ball[5].x_m - 15.0) < 1e-9 and abs(ball[5].y_m - 10.0) < 1e-9
+    assert not ball[0].estimated and not ball[10].estimated

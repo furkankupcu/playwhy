@@ -28,6 +28,7 @@ class PlayerPosition:
     team: str
     x_m: float
     y_m: float
+    estimated: bool = False  # ball only: ground track interpolated between touches
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -304,6 +305,40 @@ def smooth_positions(
                 )
             )
     return smoothed
+
+
+_TOUCH_M = 1.5        # ball this close to a player's feet is on the ground
+_MAX_FLIGHT_S = 4.0   # longer gaps between touches are left as measured
+
+
+def ground_ball_track(ball: list[PlayerPosition], players: list[PlayerPosition]) -> None:
+    """Replace the ball's ground position between two touches by a straight line.
+
+    The ball box's bottom is only on the grass when the ball is; in the air its
+    projection lands far behind the real spot. Between two touches the ground
+    track of a rolling *or* flying ball is (close to) a straight line at constant
+    speed, so we interpolate between touch points and flag those frames
+    ``estimated``. Mutates *ball* in place.
+    """
+    from collections import defaultdict
+
+    feet: dict[int, list[PlayerPosition]] = defaultdict(list)
+    for p in players:
+        feet[p.frame_idx].append(p)
+    ball = sorted(ball, key=lambda b: b.frame_idx)
+    touches = [
+        i for i, b in enumerate(ball)
+        if any(math.hypot(p.x_m - b.x_m, p.y_m - b.y_m) < _TOUCH_M for p in feet[b.frame_idx])
+    ]
+    for i0, i1 in zip(touches, touches[1:]):
+        a, b = ball[i0], ball[i1]
+        if i1 - i0 < 2 or b.timestamp - a.timestamp > _MAX_FLIGHT_S:
+            continue
+        for k in range(i0 + 1, i1):
+            f = (ball[k].timestamp - a.timestamp) / (b.timestamp - a.timestamp)
+            ball[k].x_m = a.x_m + f * (b.x_m - a.x_m)
+            ball[k].y_m = a.y_m + f * (b.y_m - a.y_m)
+            ball[k].estimated = True
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +990,7 @@ def run(clip_id: str) -> Path:
     # Separate ball positions
     ball_positions = [p for p in positions if p.team == "ball"]
     player_positions = [p for p in positions if p.team != "ball"]
+    ground_ball_track(ball_positions, player_positions)
 
     # Tactical analysis
     possession = detect_possession(player_positions, ball_positions)

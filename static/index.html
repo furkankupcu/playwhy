@@ -94,6 +94,9 @@ video { width: 100%; aspect-ratio: 16 / 9; background: #000; display: block; }
 .cue img { width: 52px; height: 64px; object-fit: cover; border-radius: 6px; flex: none; background: #22332A; }
 .cue div { display: flex; flex-direction: column; min-width: 0; font-size: 13px; color: var(--text-2); }
 .cue strong { color: var(--text); font-size: 14px; }
+.video-wrap { position: relative; line-height: 0; }
+.video-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.legend i.state-key { width: 22px; height: 0; border-radius: 0; border-top: 3px solid; }
 .pitch-wrap { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .pitch-wrap svg { width: 100%; height: auto; display: block; background: var(--grass); border-radius: 6px; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; font-size: 13px; color: var(--text-2); }
@@ -215,7 +218,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
   <section class="media" aria-label="Clip and top-down replay">
     <div class="panel">
       <div class="panel-head"><span class="label">Broadcast</span><span id="vid-time" class="mono" style="font-size:13px;color:var(--accent)">0:00.0</span></div>
-      <video id="video" controls playsinline preload="metadata"></video>
+      <div class="video-wrap"><video id="video" controls playsinline preload="metadata"></video><svg id="vid-overlay" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg></div>
       <div class="cues">
         <span class="label" style="font-size:12px">What Muse Spark saw</span>
         <div id="cues" class="cue-grid"></div>
@@ -224,9 +227,11 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
     <div class="panel">
       <div class="panel-head">
         <span class="label">Top-down replay</span>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button id="t-offside" class="toggle" aria-pressed="true">Offside line</button>
           <button id="t-ball" class="toggle" aria-pressed="true">Ball path</button>
+          <button id="t-marks" class="toggle" aria-pressed="true">Marking</button>
+          <button id="t-shape" class="toggle" aria-pressed="false">Team shape</button>
         </div>
       </div>
       <div class="pitch-wrap">
@@ -242,12 +247,17 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
           <circle cx="11" cy="34" r=".35" fill="#6E9C80"/><circle cx="94" cy="34" r=".35" fill="#6E9C80"/>
           <line x1="-.6" y1="30.34" x2="-.6" y2="37.66" stroke="#E8EDEA" stroke-width="1"/>
           <line x1="105.6" y1="30.34" x2="105.6" y2="37.66" stroke="#E8EDEA" stroke-width="1"/>
-          <g id="layer-offside"></g><g id="layer-ball"></g><g id="layer-players"></g>
+          <g id="layer-offside"></g><g id="layer-graph"></g><g id="layer-ball"></g><g id="layer-players"></g>
         </svg>
         <div class="legend">
           <span><i style="background:var(--team-a)"></i><span id="lg-a">Team A</span></span>
           <span><i style="background:var(--team-b)"></i><span id="lg-b">Team B</span></span>
           <span><i style="background:#E8EDEA;box-shadow:0 0 0 2px var(--accent)"></i>In selected claim</span>
+        </div>
+        <div id="marks-legend" class="legend">
+          <span><i class="state-key" style="border-color:#0ca30c"></i>tight &lt; 2 m</span>
+          <span><i class="state-key" style="border-color:#fab219;border-top-style:dashed"></i>loose 2–5 m</span>
+          <span><i class="state-key" style="border-color:#d03b3b;border-top-style:dotted"></i>free &gt; 5 m</span>
         </div>
         <p id="pitch-gap" class="muted" style="margin:0;font-size:13px;text-align:center" hidden>No reliable pitch mapping for this frame.</p>
       </div>
@@ -280,6 +290,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
         <span class="label">How to read this</span>
         <span style="font-size:14px;color:var(--text-2)">Positions come from SAM 3.1 tracking mapped to pitch metres. Body cues come from Muse Spark looking at player crops. A claim is shown only if it cites one of them and its time matches.</span>
         <a id="recal" href="#">Lines look off? Recalibrate with 4 points</a>
+        <a id="graph-video" href="#" download hidden>Download the marking video (MP4)</a>
       </div>
     </aside>
   </section>
@@ -292,7 +303,7 @@ const $ = (id) => document.getElementById(id);
 const SVGNS = "http://www.w3.org/2000/svg";
 const STEP_LABELS = {
   track: "Track players and ball", calibrate: "Map camera to pitch", geometry: "Find passes, offside line, shot",
-  read: "Read body cues of key players", explain: "Write the explanation", replay: "Render replay video",
+  read: "Read body cues of key players", explain: "Write the explanation", graphs: "Build player graphs",
 };
 const VIEWS = ["upload", "progress", "calibrate", "result"];
 let pollTimer = null;
@@ -447,7 +458,7 @@ async function submitCalibration(id) {
 }
 
 // ---------------------------------------------------------------- result
-const R = { data: null, frames: [], sel: 0, showOffside: true, showBall: true };
+const R = { data: null, frames: [], sel: 0, showOffside: true, showBall: true, showMarks: true, showShape: false };
 
 async function openResult(id) {
   let d;
@@ -481,6 +492,9 @@ async function openResult(id) {
   $("lg-a").textContent = d.shirts ? `Team A (${d.shirts.A} shirts)` : "Team A";
   $("lg-b").textContent = d.shirts ? `Team B (${d.shirts.B} shirts)` : "Team B";
 
+  $("graph-video").hidden = !d.graph_video;
+  $("graph-video").href = `/api/clips/${id}/graphs.mp4`;
+  $("marks-legend").hidden = !d.graphs;
   const v = $("video");
   v.src = `/api/clips/${id}/video`;
   renderStats();
@@ -613,6 +627,8 @@ function drawPitch() {
     }
   }
 
+  drawGraphs(Math.min(R.frames.length - 1, Math.floor(t * d.fps)), players);
+
   const layer = $("layer-players"); layer.replaceChildren();
   for (const p of players || []) {
     const cy = PY(p.y_m);
@@ -631,12 +647,67 @@ function drawPitch() {
   }
 }
 
+// Marking + team shape, on the pitch and projected onto the video with the frame's homography.
+const STATE = { tight: ["#0ca30c", ""], loose: ["#fab219", "1.2 .6"], free: ["#d03b3b", ".3 .5"] };
+
+function project(H, x, y) {
+  const w = H[2][0] * x + H[2][1] * y + H[2][2];
+  return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
+}
+
+function drawGraphs(fi, players) {
+  const d = R.data, g = d.graphs && d.graphs.frames[String(fi)];
+  const pitchLayer = $("layer-graph"), over = $("vid-overlay");
+  pitchLayer.replaceChildren(); over.replaceChildren();
+  $("marks-legend").hidden = !(d.graphs && R.showMarks);
+  if (!g || !players) return;
+  const pos = new Map(players.map((p) => [p.player_id, p]));
+  const H = d.homographies[fi];
+  const vw = over.viewBox.baseVal ? over.viewBox.baseVal.width : 0;
+
+  if (R.showShape) {
+    for (const l of g.links) {
+      const a = pos.get(l.a), b = pos.get(l.b);
+      if (!a || !b) continue;
+      pitchLayer.append(svg("line", {
+        x1: a.x_m, y1: PY(a.y_m), x2: b.x_m, y2: PY(b.y_m),
+        stroke: l.team === "A" ? "#5B9BFF" : "#FF8A3D", "stroke-width": ".3",
+        "stroke-opacity": l.blocked ? ".35" : ".8", "stroke-dasharray": l.blocked ? ".8 .6" : "",
+      }));
+    }
+  }
+  if (!R.showMarks) return;
+  for (const m of g.marks) {
+    const a = pos.get(m.att), b = pos.get(m.def);
+    if (!a || !b) continue;
+    const [col, dash] = STATE[m.state];
+    pitchLayer.append(svg("line", { x1: a.x_m, y1: PY(a.y_m), x2: b.x_m, y2: PY(b.y_m), stroke: col, "stroke-width": ".45", "stroke-dasharray": dash, "stroke-linecap": "round" }));
+    if (H && vw) {
+      const [ax, ay] = project(H, a.x_m, a.y_m), [bx, by] = project(H, b.x_m, b.y_m);
+      const sw = vw / 420;  // ~same visual weight at any video resolution
+      over.append(svg("line", { x1: ax, y1: ay, x2: bx, y2: by, stroke: col, "stroke-width": sw, "stroke-linecap": "round",
+        "stroke-dasharray": dash ? dash.split(" ").map((n) => n * sw * 3).join(" ") : "" }));
+      if (m.state === "free") {
+        const tx = svg("text", { x: ax, y: ay - sw * 6, fill: "#E8EDEA", "font-size": sw * 7, "text-anchor": "middle",
+          "font-family": "Inter Tight, sans-serif", "font-weight": "600", "paint-order": "stroke", stroke: "#0F1412", "stroke-width": sw * 1.5 });
+        tx.textContent = `${Math.round(m.d)} m`;
+        over.append(tx);
+      }
+    }
+  }
+}
+
+$("video").addEventListener("loadedmetadata", (e) => {
+  $("vid-overlay").setAttribute("viewBox", `0 0 ${e.target.videoWidth} ${e.target.videoHeight}`);
+  drawPitch();
+});
+
 let raf = 0;
 const loop = () => { drawPitch(); raf = $("video").paused ? 0 : requestAnimationFrame(loop); };
 $("video").addEventListener("play", () => { if (!raf) raf = requestAnimationFrame(loop); });
 $("video").addEventListener("seeked", drawPitch);
 $("video").addEventListener("timeupdate", () => { if (!raf) drawPitch(); });
-for (const [btnId, keyName] of [["t-offside", "showOffside"], ["t-ball", "showBall"]]) {
+for (const [btnId, keyName] of [["t-offside", "showOffside"], ["t-ball", "showBall"], ["t-marks", "showMarks"], ["t-shape", "showShape"]]) {
   $(btnId).addEventListener("click", (e) => { R[keyName] = !R[keyName]; e.currentTarget.setAttribute("aria-pressed", String(R[keyName])); drawPitch(); });
 }
 

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from goal_explainer import geometry, replay, explain
+from goal_explainer import geometry, graphs, explain
 
 
 def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
@@ -83,10 +83,10 @@ def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
     pitch_data = json.loads((clip_dir / "pitch.json").read_text(encoding="utf-8"))
     assert len(pitch_data) == 10
 
-    # 5. Run Step 6: Replay
-    replay_path = replay.run(clip_id, fps=25.0)
-    assert replay_path.is_file()
-    assert replay_path.stat().st_size > 0
+    # 5. Step 6: graphs (computation only; the MP4 render needs a real video)
+    g = graphs.compute(clip_id)
+    assert g["attacking_team"] in ("A", "B")
+    assert len(g["frames"]) == 10
 
     # 6. Validate explanation logic
     events_content = json.loads((clip_dir / "events.json").read_text(encoding="utf-8"))

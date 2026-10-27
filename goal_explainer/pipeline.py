@@ -16,9 +16,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from . import calibrate, explain, geometry, read, replay, track
+from . import calibrate, explain, geometry, graphs, read, track
 
-STEPS: list[str] = ["track", "calibrate", "geometry", "read", "explain", "replay"]
+STEPS: list[str] = ["track", "calibrate", "geometry", "read", "explain", "graphs"]
 
 
 def _ts() -> str:
@@ -75,9 +75,8 @@ def run_pipeline(
                 read.run(video_path, clip_id)
             elif name == "explain":
                 explain.run(video_path, clip_id)
-            elif name == "replay":
-                fps, _ = track.video_info(video_path)
-                replay.run(clip_id, fps)
+            elif name == "graphs":
+                graphs.run(video_path, clip_id)
             entry["status"] = "done"
         except Exception as exc:  # noqa: BLE001
             entry["status"] = "failed"
