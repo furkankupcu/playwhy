@@ -1,0 +1,8 @@
+runs/
+.env
+*.mp4
+*.mov
+__pycache__/
+.pytest_cache/
+.venv/
+.claude/
