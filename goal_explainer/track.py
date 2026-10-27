@@ -124,11 +124,13 @@ def shirt_colours(client, first_frame: np.ndarray) -> tuple[str, str]:
 
 def build_prompts(colour_a: str, colour_b: str) -> list[tuple[str, str, str | None]]:
     """``(prompt, cls, team)`` triples, one SAM request each."""
+    # Tested on real footage: "football"/"football player" match nothing, and
+    # "soccer player in black shirt" misses a team that "player in black" finds.
     return [
-        ("football", "ball", None),
+        ("soccer ball", "ball", None),
         ("goalkeeper", "goalkeeper", None),
-        (f"player in {colour_a} shirt", "player", "A"),
-        (f"player in {colour_b} shirt", "player", "B"),
+        (f"player in {colour_a}", "player", "A"),
+        (f"player in {colour_b}", "player", "B"),
         ("referee", "referee", None),
     ]
 
