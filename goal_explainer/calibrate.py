@@ -26,7 +26,7 @@ import numpy as np
 from scipy import optimize
 
 from .api import get_client  # noqa: F401
-from .pitch import PITCH_KEYPOINTS, PITCH_LINES  # noqa: F401
+from .pitch import LINES, PITCH_KEYPOINTS
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +428,9 @@ REGION_TEMPLATES: dict[str, list[list[tuple[float, float]]]] = {
 }
 _REGION_WEIGHTS = {"soccer field": 1.0, "penalty box": 2.0, "center circle": 1.0}
 _FIT_WIDTH = 320  # masks are compared at this width; plenty for a homography
+_REFINE_STARTS = 3  # best-ranked candidates refined; the cheapest one is not always the right basin
+_JITTER_STARTS = 12  # extra random restarts on the first frame
+_JITTER = 0.08      # restart spread, as a share of the frame width
 # Goals break the template's 90° ambiguity: a goal's base must sit on a goal-line centre.
 _GOAL_PROMPT = "soccer goal"
 _GOAL_CENTRES = np.array([[[0.0, 34.0]], [[105.0, 34.0]]])
@@ -527,48 +530,143 @@ def _project_ok(pts: np.ndarray, H: np.ndarray) -> np.ndarray | None:
     return p if np.isfinite(p).all() else None
 
 
-def fit_cost(
-    H: np.ndarray,
-    small: dict[str, np.ndarray],
-    goals: np.ndarray,
-    prior: np.ndarray | None,
-) -> float:
-    """Region (1 − IoU) cost plus penalties for misplaced goals and jumps away from *prior*."""
-    width = next(iter(small.values())).shape[1]
-    cost = region_cost(H, small)
-    if len(goals):
-        centres = _project_ok(_GOAL_CENTRES, H)
-        if centres is None:
-            return 2.0
-        d = np.linalg.norm(goals[:, None, 0, :] - centres[None, :, 0, :], axis=2).min(axis=1)
-        cost += _GOAL_WEIGHT * float(np.minimum(1.0, d / (0.1 * width)).mean())
-    if prior is not None:
-        a, b = _project_ok(_PRIOR_GRID, prior), _project_ok(_PRIOR_GRID, H)
-        if a is None or b is None:
-            return 2.0
-        d = np.linalg.norm(a - b, axis=2).ravel()
-        cost += _PRIOR_WEIGHT * float(np.minimum(1.0, np.median(d) / (0.2 * width)))
-    return cost
+_LINE_WIDTH = 640      # line cues need more pixels than region cues
+_LINE_CAP_PX = 15.0    # distances beyond this count as "no line here"
+_PLAYER_WIDTH_M = 0.9  # a player's box is about this wide on the ground (arms, stride)
+_LINE_WEIGHT = 1.0
+_SCALE_WEIGHT = 1.0
+
+
+def _template_points() -> np.ndarray:
+    """Points every 0.5 m along every pitch marking, shape (n, 1, 2)."""
+    pts = []
+    for _, poly in LINES:
+        for (xa, ya), (xb, yb) in zip(poly, poly[1:]):
+            n = max(2, int(np.hypot(xb - xa, yb - ya) * 2))
+            pts += [(xa + (xb - xa) * t, ya + (yb - ya) * t) for t in np.linspace(0, 1, n)]
+    return np.array(pts, np.float64).reshape(-1, 1, 2)
+
+
+_TEMPLATE_PTS = _template_points()
+
+
+class _FitContext:
+    """Everything the fit cost needs, precomputed once per frame."""
+
+    def __init__(self, regions, frame, people, prior):
+        h, w = next(iter(regions.values())).shape
+        s = _FIT_WIDTH / w
+        self.S = np.diag([s, s, 1.0])
+        size = (_FIT_WIDTH, max(1, round(h * s)))
+        self.small = {k: cv2.resize(m, size, interpolation=cv2.INTER_NEAREST) for k, m in regions.items()}
+        self.width = _FIT_WIDTH
+        field = regions.get("soccer field")
+        grown = cv2.dilate(field, np.ones((15, 15), np.uint8)) if field is not None else None
+
+        # Goals count only if their base is on the pitch (training goals stand beside it).
+        goals = _goal_bases(regions[_GOAL_PROMPT]) if _GOAL_PROMPT in regions else np.zeros((0, 1, 2))
+        if grown is not None and len(goals):
+            keep = [g for g in goals if grown[min(h - 1, int(g[0, 1])), min(w - 1, int(g[0, 0]))]]
+            goals = np.array(keep, np.float64).reshape(-1, 1, 2)
+        self.goals = goals * s
+
+        self.prior = self.S @ prior if prior is not None else None
+        self.people = people or []
+
+        # White line pixels, only on the pitch (white stands fooled the old line fit) and not on players.
+        self.lines = None
+        if frame is not None and grown is not None:
+            ls = _LINE_WIDTH / w
+            self.L = np.diag([ls, ls, 1.0])
+            # Threshold at full size: downscaling first blends thin lines into the grass.
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            full_lines = ((hsv[..., 2] > 170) & (hsv[..., 1] < 60)).astype(np.uint8) & grown
+            for x1, y1, x2, y2 in self.people:
+                full_lines[int(y1):int(y2) + 1, int(x1):int(x2) + 1] = 0
+            size_l = (_LINE_WIDTH, max(1, round(h * ls)))
+            lines = (cv2.resize(full_lines.astype(np.float32), size_l, interpolation=cv2.INTER_AREA) > 0).astype(np.uint8)
+            on_pitch = cv2.resize(grown, size_l, interpolation=cv2.INTER_NEAREST)
+            if lines.sum() > 50:
+                self.lines, self.on_pitch = lines, on_pitch
+                self.dt = cv2.distanceTransform(1 - lines, cv2.DIST_L2, 3)
+
+    def line_cost(self, H: np.ndarray) -> float:
+        """Symmetric chamfer between projected markings and white pixels (0 = on the lines)."""
+        p = _project_ok(_TEMPLATE_PTS, self.L @ H)
+        if p is None:
+            return 1.0
+        p = p.reshape(-1, 2)
+        h, w = self.lines.shape
+        ok = (p[:, 0] >= 0) & (p[:, 0] < w) & (p[:, 1] >= 0) & (p[:, 1] < h)
+        p = p[ok]
+        p = p[self.on_pitch[p[:, 1].astype(int), p[:, 0].astype(int)] > 0]
+        if len(p) < 20:
+            return 1.0
+        precision = np.minimum(self.dt[p[:, 1].astype(int), p[:, 0].astype(int)], _LINE_CAP_PX).mean()
+        drawn = np.zeros_like(self.lines)
+        drawn[p[:, 1].astype(int), p[:, 0].astype(int)] = 1
+        drawn = cv2.dilate(drawn, np.ones((3, 3), np.uint8))
+        recall = np.minimum(cv2.distanceTransform(1 - drawn, cv2.DIST_L2, 3)[self.lines > 0], _LINE_CAP_PX).mean()
+        return float(precision + recall) / (2 * _LINE_CAP_PX)
+
+    def player_width_m(self, H: np.ndarray) -> float | None:
+        """Median ground width (m) of the player boxes under *H*; ~0.9 m when H is right."""
+        if not self.people:
+            return None
+        try:
+            Hi = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            return None
+        feet = np.array([[[x1, y2]] for x1, _, _, y2 in self.people] + [[[x2, y2]] for _, _, x2, y2 in self.people],
+                        np.float64)
+        g = _project_ok(feet, Hi)
+        if g is None:
+            return None
+        n = len(self.people)
+        return float(np.median(np.linalg.norm(g[:n, 0] - g[n:, 0], axis=1)))
+
+    def cost(self, H: np.ndarray) -> float:
+        """Region IoU + line chamfer + player scale + on-pitch goals + prior (H at calibration scale)."""
+        Hs = self.S @ H
+        cost = region_cost(Hs, self.small)
+        if self.lines is not None:
+            cost += _LINE_WEIGHT * self.line_cost(H)
+        wm = self.player_width_m(H)
+        if wm is not None:
+            cost += _SCALE_WEIGHT * (min(1.0, abs(np.log(max(wm, 1e-3) / _PLAYER_WIDTH_M)) / np.log(2.5)))
+        if len(self.goals):
+            centres = _project_ok(_GOAL_CENTRES, Hs)
+            if centres is None:
+                return 4.0
+            d = np.linalg.norm(self.goals[:, None, 0, :] - centres[None, :, 0, :], axis=2).min(axis=1)
+            cost += _GOAL_WEIGHT * float(np.minimum(1.0, d / (0.1 * self.width)).mean())
+        if self.prior is not None:
+            a, b = _project_ok(_PRIOR_GRID, self.prior), _project_ok(_PRIOR_GRID, Hs)
+            if a is None or b is None:
+                return 4.0
+            d = np.linalg.norm(a - b, axis=2).ravel()
+            cost += _PRIOR_WEIGHT * float(np.minimum(1.0, np.median(d) / (0.2 * self.width)))
+        return cost
 
 
 def fit_regions(
     regions: dict[str, np.ndarray],
     extra_candidates: list[np.ndarray] = (),
     prior: np.ndarray | None = None,
+    frame: np.ndarray | None = None,
+    people: list[list[float]] | None = None,
 ) -> tuple[np.ndarray, float] | None:
-    """Best pitch → image homography for the SAM *regions*, with its region cost (0 = perfect).
+    """Best pitch → image homography for the SAM *regions*, with a reliability cost.
 
-    *prior* (e.g. the tracked homography of this frame) penalises fits that jump away from it.
+    *frame* adds a white-line fit and *people* (player boxes, frame pixels) a scale
+    check: SAM regions alone let a shrunken whole pitch fill the visible grass.
+    *prior* (e.g. the tracked homography of this frame) penalises jumps away from it.
+    The returned cost is the region cost, or 1.0 when the players' implied size is
+    implausible (a wrong scale can still have a near-perfect region overlap).
     """
     if "penalty box" not in regions and "soccer field" not in regions:
         return None
-    h, w = next(iter(regions.values())).shape
-    s = _FIT_WIDTH / w
-    S = np.diag([s, s, 1.0])
-    size = (_FIT_WIDTH, max(1, round(h * s)))
-    small = {k: cv2.resize(m, size, interpolation=cv2.INTER_NEAREST) for k, m in regions.items()}
-    goals = _goal_bases(small[_GOAL_PROMPT]) if _GOAL_PROMPT in small else np.zeros((0, 1, 2))
-    prior_s = S @ prior if prior is not None else None
+    ctx = _FitContext(regions, frame, people, prior)
 
     candidates = list(extra_candidates) + ([prior] if prior is not None else [])
     for name, template in (("penalty box", _PA), ("soccer field", _FIELD)):
@@ -578,23 +676,40 @@ def fit_regions(
     candidates = [H for H in candidates if _keeps_orientation(H)]
     if not candidates:
         return None
-    best = min(candidates, key=lambda H: fit_cost(S @ H, small, goals, prior_s))
+    ranked = sorted(candidates, key=ctx.cost)
 
-    # Refine by moving the image positions of 4 anchor points (well conditioned, in px).
+    # Refine the best few by moving the image positions of 4 anchor points (well conditioned, in px).
     anchors = np.array(_PA, np.float32)
-    x0 = cv2.perspectiveTransform(anchors.reshape(-1, 1, 2).astype(np.float64), S @ best).reshape(-1)
 
     def to_h(x: np.ndarray) -> np.ndarray:
         return cv2.getPerspectiveTransform(anchors, x.reshape(4, 2).astype(np.float32))
 
     def cost(x: np.ndarray) -> float:
-        Hs = to_h(x)
-        return fit_cost(Hs, small, goals, prior_s) if _keeps_orientation(Hs) else 2.0
+        H = to_h(x)
+        return ctx.cost(H) if _keeps_orientation(H) else 4.0
 
-    res = optimize.minimize(cost, x0, method="Nelder-Mead",
-                            options={"xatol": 0.2, "fatol": 1e-4, "maxiter": 1500})
-    x = res.x if res.fun <= cost(x0) else x0
-    return np.linalg.inv(S) @ to_h(x), region_cost(to_h(x), small)
+    def refine(x0: np.ndarray, maxiter: int) -> tuple[np.ndarray, float]:
+        res = optimize.minimize(cost, x0, method="Nelder-Mead",
+                                options={"xatol": 0.3, "fatol": 1e-4, "maxiter": maxiter})
+        c0 = cost(x0)
+        return (res.x, res.fun) if res.fun <= c0 else (x0, c0)
+
+    starts = [cv2.perspectiveTransform(anchors.reshape(-1, 1, 2).astype(np.float64), H0).reshape(-1)
+              for H0 in ranked[:_REFINE_STARTS]]
+    best_x, best_c = min((refine(x0, 1500) for x0 in starts), key=lambda r: r[1])
+    if prior is None:
+        # No tracking prior (first frame): the cost has local minima, so also try
+        # jittered starts around the best fit and keep the lowest.
+        rng = np.random.default_rng(0)
+        sigma = _JITTER * regions[next(iter(regions))].shape[1]
+        for _ in range(_JITTER_STARTS):
+            x, c = refine(best_x + rng.normal(0, sigma, best_x.shape), 600)
+            if c < best_c:
+                best_x, best_c = x, c
+    H = to_h(best_x)
+    wm = ctx.player_width_m(H)
+    plausible = wm is None or 0.4 <= wm <= 2.0
+    return H, region_cost(ctx.S @ H, ctx.small) if plausible else 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +722,7 @@ _REGION_COST_OK = 0.45  # mean (1 − IoU). Good fits score ~0.1–0.35: SAM's f
 def compute_initial_homography(
     client,
     frame: np.ndarray,
-    tracks_frame: dict | None = None,
+    people: list[list[float]] | None = None,
 ) -> tuple[np.ndarray, str, float | None]:
     """Automatic calibration: SAM regions (seeded by Spark keypoints), then Hough.
 
@@ -627,7 +742,7 @@ def compute_initial_homography(
                 seeds.append(H)
 
     # --- Path (a): SAM regions; Spark keypoints are only an extra starting point ---
-    fit = fit_regions(sam_regions(client, frame), seeds)
+    fit = fit_regions(sam_regions(client, frame), seeds, frame=frame, people=people)
     if fit is not None:
         H, cost = fit
         logger.info("Region fit cost %.3f", cost)
@@ -818,6 +933,8 @@ def run(
         s = min(1.0, _CALIB_WIDTH / full.shape[1])
         frame = cv2.resize(full, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else full
         to_full = np.diag([1 / s, 1 / s, 1.0])
+        people = [[v * s for v in o["bbox"]] for o in (tracks_by_idx.get(i) or {}).get("objects", [])
+                  if o.get("cls") in ("player", "goalkeeper")]
         if i == 0:
             # --- Step 1: Initial homography on first frame ---
             if manual_points is not None and len(manual_points) >= 4:
@@ -830,7 +947,7 @@ def run(
                 m, cost = "manual", None
             else:
                 # Paths (a) then (b) — raises CalibrationError so the UI can offer (c)
-                H_curr, m, cost = compute_initial_homography(client, frame, tracks_by_idx.get(0))
+                H_curr, m, cost = compute_initial_homography(client, frame, people)
         else:
             # --- Step 2: ORB propagation between refits ---
             orb_mask = cv2.resize(_player_mask_from_tracks(tracks_by_idx.get(i - 1), full.shape),
@@ -842,7 +959,7 @@ def run(
         # Hand-placed points are trusted: no SAM refit may override them
         if manual_points is None and i % _REFIT_EVERY == 0 and (i > 0 or cost is None):
             fit = fit_regions(sam_regions(client, frame), prior=H_curr if i > 0 else None,
-                              extra_candidates=[H_curr])
+                              extra_candidates=[H_curr], frame=frame, people=people)
             if fit is not None and fit[1] <= _REGION_COST_OK:
                 H_curr, cost = fit
                 m = m if i == 0 else "sam_regions"

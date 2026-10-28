@@ -224,7 +224,7 @@ def render_video(video_path: Path, clip_id: str, graphs: dict[str, Any], out: Pa
         dynamic.extend(a if isinstance(a, list) else [a])
 
     def pill(ax, x, y, text, size=8.5):
-        add(ax.text(x, y, text, fontsize=size, color=TEXT, ha="center", va="center", zorder=7,
+        add(ax.text(x, y, text, fontsize=size, color=TEXT, ha="center", va="center", zorder=7, clip_on=True,
                     bbox=dict(boxstyle="round,pad=0.25,rounding_size=0.6", fc=SURFACE, ec="none", alpha=0.9)))
 
     def people_layer(ax, people, ball):
@@ -254,7 +254,10 @@ def render_video(video_path: Path, clip_id: str, graphs: dict[str, Any], out: Pa
             img = cv2.cvtColor(cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
             if cam is None:
                 cam = ax0.imshow(img)
-                ax0.set_xlim(0, img.shape[1]); ax0.set_ylim(img.shape[0] * 0.93, img.shape[0] * 0.28)
+                # Phone/broadcast frames have stands and roof on top: trim them. Wide crops
+                # (e.g. a panorama cut to the box) are all pitch: keep the whole frame.
+                top = 0.28 if img.shape[1] / img.shape[0] < 2.2 else 0.0
+                ax0.set_xlim(0, img.shape[1]); ax0.set_ylim(img.shape[0] * (0.93 if top else 1.0), img.shape[0] * top)
             else:
                 cam.set_data(img)
 
@@ -272,7 +275,7 @@ def render_video(video_path: Path, clip_id: str, graphs: dict[str, Any], out: Pa
                 add(ax0.plot([pa[0], pb[0]], [pa[1], pb[1]], color=col, ls=ls, lw=2.4, solid_capstyle="round", zorder=3))
                 add(poly(ax1, [a, b], color=col, ls=ls, lw=2, solid_capstyle="round", zorder=3))
                 if m["state"] == "free":
-                    add(ax0.text(pa[0], pa[1] - 22, f"{m['d']:.0f} m", fontsize=9, color=TEXT, ha="center", zorder=4,
+                    add(ax0.text(pa[0], pa[1] - 22, f"{m['d']:.0f} m", fontsize=9, color=TEXT, ha="center", zorder=4, clip_on=True,
                                  bbox=dict(boxstyle="round,pad=0.2", fc=SURFACE, ec="none", alpha=0.85)))
                     u, v = T(*a)
                     if v <= DEPTH - 2:
