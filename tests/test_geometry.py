@@ -70,54 +70,55 @@ def test_smooth_positions():
     assert abs(smoothed[-1].x_m - 24.0) < 1.0
 
 
+def _pass_scene(ball_moves: bool):
+    """Player 1 at x=10, player 2 at x=20; the ball either travels 1 → 2 or sits still."""
+    players, ball = [], []
+    for f in range(30):
+        players.append(PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=1, team="A", x_m=10.0, y_m=20.0))
+        players.append(PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=2, team="A", x_m=20.0, y_m=20.0))
+        x = (10.0 if f < 10 else 10.0 + (f - 9) * 1.0 if f < 19 else 20.0) if ball_moves else 15.0
+        ball.append(PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=-1, team="ball", x_m=x, y_m=20.0))
+    return players, ball
+
+
 def test_possession_and_pass_detection():
-    # Setup ball and players
-    ball_positions = [
-        PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=-1, team="ball", x_m=10.0 + f * 0.5, y_m=20.0)
-        for f in range(20)
-    ]
-    player_positions = []
-    # Player 1 with ball from frame 0..9 (x=10..14.5)
-    for f in range(10):
-        player_positions.append(
-            PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=1, team="A", x_m=10.0 + f * 0.5, y_m=20.2)
-        )
-    # Player 2 with ball from frame 10..19 (x=15..19.5)
-    for f in range(10, 20):
-        player_positions.append(
-            PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=2, team="A", x_m=10.0 + f * 0.5, y_m=20.1)
-        )
+    players, ball = _pass_scene(ball_moves=True)
+    possession = detect_possession(players, ball, threshold_m=1.5, min_frames=3)
+    assert {p.player_id for p in possession} == {1, 2}
+    passes = detect_passes(possession, players, ball)
+    assert [(p.passer_id, p.receiver_id, p.team) for p in passes] == [(1, 2, "A")]
 
-    possession = detect_possession(player_positions, ball_positions, threshold_m=1.5, min_frames=3)
-    assert len(possession) >= 6
-    holder_ids = {p.player_id for p in possession}
-    assert 1 in holder_ids
-    assert 2 in holder_ids
 
-    passes = detect_passes(possession, player_positions)
-    assert len(passes) >= 1
-    p = passes[0]
-    assert p.passer_id == 1
-    assert p.receiver_id == 2
-    assert p.team == "A"
+def test_no_pass_when_the_ball_stays_put():
+    # Two teammates by a still ball (corner set-up): nearest player flips, no pass.
+    players, _ = _pass_scene(ball_moves=False)
+    ball = [PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=-1, team="ball", x_m=10.5, y_m=20.0) for f in range(30)]
+    for f in range(15, 30):  # player 2 walks up next to the ball
+        players[2 * f + 1] = PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=2, team="A", x_m=10.2, y_m=20.0)
+    possession = detect_possession(players, ball, threshold_m=1.5, min_frames=3)
+    assert detect_passes(possession, players, ball) == []
 
 
 def test_detect_shots():
-    possession = [
-        PossessionEvent(frame_idx=10, timestamp=0.4, player_id=9, team="A")
-    ]
-    positions = [
-        PlayerPosition(frame_idx=10, timestamp=0.4, player_id=9, team="A", x_m=95.0, y_m=34.0)
-    ]
-    ball_positions = [
-        PlayerPosition(frame_idx=10, timestamp=0.4, player_id=-1, team="ball", x_m=95.0, y_m=34.0)
-    ]
-    shots = detect_shots(possession, positions, ball_positions)
+    possession = [PossessionEvent(frame_idx=f, timestamp=f * 0.04, player_id=9, team="A") for f in range(8, 11)]
+    positions = [PlayerPosition(frame_idx=10, timestamp=0.4, player_id=9, team="A", x_m=95.0, y_m=34.0)]
+    # after the touch the ball flies into the right-hand goal
+    ball = [PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=-1, team="ball", x_m=95.0 + (f - 10) * 1.0, y_m=34.0)
+            for f in range(10, 22)]
+    shots = detect_shots(possession, positions, ball)
     assert len(shots) == 1
     s = shots[0]
-    assert s.shooter_id == 9
+    assert s.shooter_id == 9 and s.goal_xy == (105.0, 34.0)
     assert pytest.approx(s.distance_m) == 10.0
     assert s.angle_deg > 0.0
+
+
+def test_no_shot_when_the_ball_does_not_reach_goal():
+    possession = [PossessionEvent(frame_idx=f, timestamp=f * 0.04, player_id=9, team="A") for f in range(8, 11)]
+    positions = [PlayerPosition(frame_idx=10, timestamp=0.4, player_id=9, team="A", x_m=95.0, y_m=34.0)]
+    ball = [PlayerPosition(frame_idx=f, timestamp=f * 0.04, player_id=-1, team="ball", x_m=95.0, y_m=34.0 - (f - 10))
+            for f in range(10, 22)]  # rolled sideways, away from goal
+    assert detect_shots(possession, positions, ball) == []
 
 
 def test_offside_detection():

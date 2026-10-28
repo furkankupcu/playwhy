@@ -437,11 +437,18 @@ def detect_possession(
 # Pass detection
 # ---------------------------------------------------------------------------
 
+_MIN_PASS_M = 3.0  # the ball must travel this far between the two players
+
+
 def detect_passes(
     possession: list[PossessionEvent],
     positions: list[PlayerPosition],
+    ball_positions: list[PlayerPosition],
 ) -> list[PassEvent]:
-    """Detect passes: possession changes between players on the same team.
+    """Detect passes: possession moves to a teammate *and* the ball travels ≥ 3 m.
+
+    Without the travel check, two teammates standing by a still ball (a corner
+    being set up) "pass" every time the nearer one changes.
 
     Args:
         possession: Chronological possession events.
@@ -455,6 +462,7 @@ def detect_passes(
     pos_lookup: dict[tuple[int, int], PlayerPosition] = {}
     for p in positions:
         pos_lookup[(p.frame_idx, p.player_id)] = p
+    ball_at = {b.frame_idx: b for b in ball_positions}
 
     passes: list[PassEvent] = []
     eid = 0
@@ -465,6 +473,9 @@ def detect_passes(
             continue
         if prev.team != curr.team:
             continue  # interception, not a pass
+        b0, b1 = ball_at.get(prev.frame_idx), ball_at.get(curr.frame_idx)
+        if b0 is None or b1 is None or math.hypot(b1.x_m - b0.x_m, b1.y_m - b0.y_m) < _MIN_PASS_M:
+            continue  # the ball did not go anywhere
 
         start_pos = pos_lookup.get((prev.frame_idx, prev.player_id))
         end_pos = pos_lookup.get((curr.frame_idx, curr.player_id))
@@ -567,61 +578,62 @@ _PITCH_WIDTH = 68.0         # metres (FIFA standard)
 _OFF_PITCH_M = 3.0          # people further outside the lines are not in play
 
 
+_SHOT_WINDOW_S = 2.0        # the ball must reach the goal mouth this soon after the touch
+_GOAL_LINE_M = 2.0          # "reached": within this of the goal line, or beyond it…
+_GOAL_MOUTH_HALF_M = 8.0    # …and within this of the goal centre across the pitch
+
+
+def _releases(possession: list[PossessionEvent]) -> list[PossessionEvent]:
+    """Last frame of each run of possession by one player (the moment the ball leaves)."""
+    out = []
+    for i, ev in enumerate(possession):
+        nxt = possession[i + 1] if i + 1 < len(possession) else None
+        if nxt is None or nxt.player_id != ev.player_id or nxt.frame_idx > ev.frame_idx + 1:
+            out.append(ev)
+    return out
+
+
 def detect_shots(
     possession: list[PossessionEvent],
     positions: list[PlayerPosition],
     ball_positions: list[PlayerPosition],
 ) -> list[ShotEvent]:
-    """Detect shots on goal — the final possession event is treated as a shot.
+    """A shot is a touch after which the ball reaches a goal mouth within 2 s.
 
-    The goal centre is assumed at ``(PITCH_LENGTH, PITCH_WIDTH / 2)`` for
-    attacks going right, or ``(0, PITCH_WIDTH / 2)`` for attacks going left.
-
-    Args:
-        possession: Chronological possession events.
-        positions: All player positions.
-        ball_positions: Ball positions.
-
-    Returns:
-        List of :class:`ShotEvent` records (often just one for a goal clip).
+    Not "the last touch of the clip": a clip that ends on a pass or a corner
+    being set up has no shot.
     """
-    if not possession:
-        return []
-
-    pos_lookup: dict[tuple[int, int], PlayerPosition] = {}
-    for p in positions:
-        pos_lookup[(p.frame_idx, p.player_id)] = p
-
-    last = possession[-1]
-    shooter_pos = pos_lookup.get((last.frame_idx, last.player_id))
-    if shooter_pos is None:
-        return []
-
-    # Heuristic: if shooter is in the right half, goal is on the right
-    goal_x = _PITCH_LENGTH if shooter_pos.x_m > _PITCH_LENGTH / 2 else 0.0
-    goal_y = _PITCH_WIDTH / 2.0
-    goal_xy = (goal_x, goal_y)
-
-    distance = math.hypot(shooter_pos.x_m - goal_x, shooter_pos.y_m - goal_y)
-
-    # Angle subtended by goal posts from shooter's position
-    post_left_y = goal_y - _GOAL_WIDTH / 2.0
-    post_right_y = goal_y + _GOAL_WIDTH / 2.0
-    angle_left = math.atan2(post_left_y - shooter_pos.y_m, goal_x - shooter_pos.x_m)
-    angle_right = math.atan2(post_right_y - shooter_pos.y_m, goal_x - shooter_pos.x_m)
-    angle_deg = abs(math.degrees(angle_right - angle_left))
-
-    return [
-        ShotEvent(
-            event_id=0,
-            frame_idx=last.frame_idx,
-            timestamp=last.timestamp,
-            shooter_id=last.player_id,
+    pos_lookup = {(p.frame_idx, p.player_id): p for p in positions}
+    ball = sorted(ball_positions, key=lambda b: b.frame_idx)
+    shots: list[ShotEvent] = []
+    for rel in _releases(possession):
+        shooter = pos_lookup.get((rel.frame_idx, rel.player_id))
+        if shooter is None:
+            continue
+        after = [b for b in ball if rel.timestamp < b.timestamp <= rel.timestamp + _SHOT_WINDOW_S]
+        goal_x = next((
+            gx for gx in (0.0, _PITCH_LENGTH)
+            for b in after
+            if (b.x_m <= gx + _GOAL_LINE_M if gx == 0.0 else b.x_m >= gx - _GOAL_LINE_M)
+            and abs(b.y_m - _PITCH_WIDTH / 2) <= _GOAL_MOUTH_HALF_M
+        ), None)
+        if goal_x is None:
+            continue
+        goal_y = _PITCH_WIDTH / 2.0
+        distance = math.hypot(shooter.x_m - goal_x, shooter.y_m - goal_y)
+        # Angle subtended by the posts from the shooter's position
+        angle_left = math.atan2(goal_y - _GOAL_WIDTH / 2 - shooter.y_m, goal_x - shooter.x_m)
+        angle_right = math.atan2(goal_y + _GOAL_WIDTH / 2 - shooter.y_m, goal_x - shooter.x_m)
+        shots.append(ShotEvent(
+            event_id=len(shots),
+            frame_idx=rel.frame_idx,
+            timestamp=rel.timestamp,
+            shooter_id=rel.player_id,
             distance_m=round(distance, 2),
-            angle_deg=round(angle_deg, 2),
-            goal_xy=goal_xy,
-        )
-    ]
+            angle_deg=round(abs(math.degrees(angle_right - angle_left)), 2),
+            goal_xy=(goal_x, goal_y),
+        ))
+    return shots
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +1006,7 @@ def run(clip_id: str) -> Path:
 
     # Tactical analysis
     possession = detect_possession(player_positions, ball_positions)
-    passes = detect_passes(possession, player_positions)
+    passes = detect_passes(possession, player_positions, ball_positions)
     shots = detect_shots(possession, player_positions, ball_positions)
     # Attack direction = side of the goal that was shot at (else where the ball ended)
     if shots:
