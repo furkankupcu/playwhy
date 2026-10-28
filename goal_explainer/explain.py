@@ -90,7 +90,45 @@ _EVIDENCE_SLACK_S = 1.5
 # ---------------------------------------------------------------------------
 
 
-def build_explanation_prompt(events: dict[str, Any], cues: list[dict[str, Any]]) -> str:
+def player_names(tracks: dict[str, Any], cues: list[dict[str, Any]]) -> dict[int, str]:
+    """Human names for tracked ids: "blue #6", "blue keeper", or "blue player 3".
+
+    Shirt colours come from tracks.json (read by Muse Spark), numbers from the cues
+    (Muse Spark read them off the crops). Ids are internal and mean nothing to a reader.
+    """
+    from collections import Counter
+
+    kits = tracks.get("kits") or {}
+    colour = {"A": kits.get("team_a") or tracks.get("shirts", {}).get("A", "team A"),
+              "B": kits.get("team_b") or tracks.get("shirts", {}).get("B", "team B")}
+    numbers: dict[int, Counter] = {}
+    for c in cues:
+        n = str(c.get("jersey_number", "")).strip()
+        if n.isdigit() and c.get("visible"):
+            numbers.setdefault(c["player_id"], Counter())[n] += 1
+    first_seen: dict[int, tuple[str, str]] = {}
+    for f in tracks.get("frames", []):
+        for o in f["objects"]:
+            if o["cls"] in ("player", "goalkeeper") and o.get("team") in colour:
+                first_seen.setdefault(o["object_id"], (o["team"], o["cls"]))
+    names: dict[int, str] = {}
+    count: Counter = Counter()
+    for pid, (team, cls) in first_seen.items():
+        if pid in numbers:
+            names[pid] = f"{colour[team]} #{numbers[pid].most_common(1)[0][0]}"
+        elif cls == "goalkeeper":
+            names[pid] = f"{colour[team]} keeper"
+        else:
+            count[team] += 1
+            names[pid] = f"{colour[team]} player {count[team]}"
+    return names
+
+
+def build_explanation_prompt(
+    events: dict[str, Any],
+    cues: list[dict[str, Any]],
+    names: dict[int, str] | None = None,
+) -> str:
     """Build a prompt with all events and cues data for explanation generation.
 
     Asks Muse Spark to produce 3–6 tactical claims about why the goal happened,
@@ -101,7 +139,7 @@ def build_explanation_prompt(events: dict[str, Any], cues: list[dict[str, Any]])
 
     # Build a lookup of valid evidence IDs so the model knows what to cite
     valid_event_ids: list[str] = []
-    for key in ("events", "passes", "shots", "key_moments", "pass_chain"):
+    for key in ("events", "passes", "shots", "goals", "key_moments", "pass_chain"):
         for item in events.get(key, []):
             eid = item.get("event_id") if isinstance(item, dict) else None
             mid = item.get("moment_id") if isinstance(item, dict) else None
@@ -123,7 +161,10 @@ def build_explanation_prompt(events: dict[str, Any], cues: list[dict[str, Any]])
         "=== VALID EVIDENCE IDs ===\n"
         f"Event IDs: {valid_event_ids}\n"
         f"Cue IDs: {valid_cue_ids}\n\n"
-        "Write 3-6 tactical claims explaining WHY this goal happened. "
+        + (f"=== PLAYER NAMES (id: name) ===\n{json.dumps({str(k): v for k, v in names.items()})}\n"
+           "In the claim text and summary refer to players ONLY by these names, never by id; "
+           "keep the numeric ids in player_ids.\n\n" if names else "")
+        + "Write 3-6 tactical claims explaining WHY this goal happened. "
         "Each claim must be a concise, insightful observation about tactics, "
         "positioning, decision-making, or execution.\n\n"
         "For each claim give t_start/t_end (seconds in the clip), the player_ids "
@@ -149,7 +190,7 @@ def _collect_valid_ids(
 ) -> set[str]:
     """Collect all valid event and cue IDs from the source data."""
     ids: set[str] = set()
-    for key in ("events", "passes", "shots", "key_moments", "pass_chain"):
+    for key in ("events", "passes", "shots", "goals", "key_moments", "pass_chain"):
         for item in events.get(key, []):
             if isinstance(item, dict):
                 eid = item.get("event_id")
@@ -170,7 +211,7 @@ def _cue_id(cue: dict[str, Any]) -> str:
 def _evidence_times(events: dict[str, Any], cues: list[dict[str, Any]]) -> dict[str, float]:
     """Timestamp (s) of every evidence id that has one; cues take their moment's time."""
     times: dict[str, float] = {}
-    for key in ("passes", "shots", "key_moments", "pass_chain"):
+    for key in ("passes", "shots", "goals", "key_moments", "pass_chain"):
         for item in events.get(key, []):
             if isinstance(item, dict) and "timestamp" in item:
                 for k in ("event_id", "moment_id"):
@@ -307,7 +348,9 @@ def run(video_path: Path, clip_id: str) -> Path:
     clip_duration = _get_clip_duration(video_path)
     logger.info("Clip duration: %.2f s", clip_duration)
 
-    prompt = build_explanation_prompt(events, cues)
+    tracks = json.loads((run_dir / "tracks.json").read_text(encoding="utf-8"))
+    names = player_names(tracks, cues)
+    prompt = build_explanation_prompt(events, cues, names)
 
     explanation = get_client(clip_id).spark_json(prompt, _EXPLANATION_SCHEMA)
     explanation["clip_id"] = clip_id

@@ -201,3 +201,14 @@ def test_ground_ball_track_straightens_flight_between_touches():
     ground_ball_track(ball, players)
     assert ball[5].estimated and abs(ball[5].x_m - 15.0) < 1e-9 and abs(ball[5].y_m - 10.0) < 1e-9
     assert not ball[0].estimated and not ball[10].estimated
+
+
+def test_key_moments_are_capped_to_the_attack():
+    from goal_explainer.geometry import KeyMoment, PassEvent
+    passes = [PassEvent(0, 100, 4.0, 1, 2, "A", (0, 0), (5, 0), True)]
+    lost = [KeyMoment(0, f, f / 25, "lost_man", [pid, 9], "") for f, pid in
+            [(10, 1), (20, 2), (30, 3), (40, 4), (50, 5), (60, 77), (200, 1)]]  # 77: defender; 200: after the pass
+    km = collect_key_moments(passes, [], lost, attackers={1, 2, 3, 4, 5})
+    assert [m.event_type for m in km].count("lost_man") == 4
+    assert {m.player_ids[0] for m in km if m.event_type == "lost_man"} == {2, 3, 4, 5}  # the last four before the pass
+    assert [m.moment_id for m in km] == list(range(len(km)))

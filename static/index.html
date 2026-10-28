@@ -550,6 +550,7 @@ function renderTimeline() {
   tl.querySelectorAll(".tl-span,.tl-mark").forEach((n) => n.remove());
   (d.events.passes || []).forEach((p, i) => tl.append(el("span", { class: "tl-mark", style: `left:${pct(p.timestamp, d.duration)}`, text: `P${i + 1}` })));
   (d.events.shots || []).forEach((s) => tl.append(el("span", { class: "tl-mark", style: `left:${pct(s.timestamp, d.duration)}`, text: "Shot" })));
+  (d.events.goals || []).forEach((g) => tl.append(el("span", { class: "tl-mark", style: `left:${pct(g.timestamp, d.duration)};color:var(--accent);font-weight:600`, text: "Goal" })));
   (d.explanation.claims || []).forEach((c, i) => tl.append(el("button", {
     class: "tl-span", "aria-pressed": String(i === R.sel), "aria-label": `Claim ${i + 1} at ${fmt(c.t_start)}`,
     style: `left:${pct(c.t_start, d.duration)};width:${pct(Math.max(0.1, c.t_end - c.t_start), d.duration)}`,

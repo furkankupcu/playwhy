@@ -127,3 +127,22 @@ def test_validate_explanation():
     assert len(cleaned["claims"]) == 1
     assert cleaned["claims"][0]["claim_id"] == 1
     assert cleaned["summary"] == "Goal test summary."
+
+
+def test_player_names_use_colour_number_and_role():
+    from goal_explainer.explain import build_explanation_prompt, player_names
+    tracks = {"kits": {"team_a": "white", "team_b": "blue"}, "frames": [{"objects": [
+        {"object_id": 1001, "cls": "player", "team": "A"},
+        {"object_id": 2003, "cls": "player", "team": "B"},
+        {"object_id": 2004, "cls": "player", "team": "B"},
+        {"object_id": 4000, "cls": "goalkeeper", "team": "B"},
+        {"object_id": 5000, "cls": "referee", "team": None},
+    ]}]}
+    cues = [{"player_id": 2004, "jersey_number": "6", "visible": True},
+            {"player_id": 2004, "jersey_number": "8", "visible": True},
+            {"player_id": 2004, "jersey_number": "6", "visible": True},
+            {"player_id": 1001, "jersey_number": "", "visible": True}]
+    names = player_names(tracks, cues)
+    assert names == {1001: "white player 1", 2003: "blue player 1", 2004: "blue #6", 4000: "blue keeper"}
+    prompt = build_explanation_prompt({"passes": []}, [], names)
+    assert '"2004": "blue #6"' in prompt and "never by id" in prompt

@@ -60,7 +60,7 @@ def run_pipeline(
             save()
             continue
 
-        print(f"[{_ts()}] Step {num}/{len(STEPS)} ({name}) — starting")
+        print(f"[{_ts()}] Step {num}/{len(STEPS)} ({name}) - starting")
         entry["status"] = "running"
         save()
         t0 = time.perf_counter()
@@ -86,9 +86,9 @@ def run_pipeline(
             traceback.print_exc()
         entry["elapsed_s"] = round(time.perf_counter() - t0, 3)
         save()
-        print(f"[{_ts()}]   {name} → {entry['status']} ({entry['elapsed_s']:.1f}s)")
+        print(f"[{_ts()}]   {name} -> {entry['status']} ({entry['elapsed_s']:.1f}s)")
 
-    print(f"[{_ts()}] Pipeline finished (ok={log['ok']}) — {status_path}")
+    print(f"[{_ts()}] Pipeline finished (ok={log['ok']}): {status_path}")
     return log
 
 
@@ -110,14 +110,14 @@ def main() -> None:
 
     video_path = Path(args.video).resolve()
     if not video_path.is_file():
-        sys.exit(f"Error: video file not found — {video_path}")
+        sys.exit(f"Error: video file not found: {video_path}")
 
     manual_points = None
     if args.manual_points:
         try:
             manual_points = json.loads(args.manual_points)
         except json.JSONDecodeError as exc:
-            sys.exit(f"Error: invalid --manual-points JSON — {exc}")
+            sys.exit(f"Error: invalid --manual-points JSON: {exc}")
 
     log = run_pipeline(video_path, args.clip_id or video_path.stem, manual_points, args.skip_to)
     sys.exit(0 if log["ok"] else 1)

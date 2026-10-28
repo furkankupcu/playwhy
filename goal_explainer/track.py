@@ -220,6 +220,11 @@ def resolve_duplicates(client, video_path: Path, tracks: list[TracksFrame],
     """Keep one label per doubly-detected person, chosen by Muse Spark from a crop."""
     colour_of = {pi: p.removeprefix("player in ") for pi, (p, _, _) in enumerate(prompts)}
     for (a, b), frames in find_duplicates(tracks).items():
+        # An earlier pair may already have dropped one of these ids from some frames.
+        frames = [f for f in frames
+                  if {a, b} <= {o["object_id"] for o in tracks[f]["objects"]}]
+        if not frames:
+            continue
         mid = frames[len(frames) // 2]
         box = next(o["bbox"] for o in tracks[mid]["objects"] if o["object_id"] == a)
         ca, cb = colour_of[a // 1000], colour_of[b // 1000]

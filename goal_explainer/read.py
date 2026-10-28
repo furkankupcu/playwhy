@@ -36,6 +36,7 @@ class PlayerCue(TypedDict):
     reaction_delay: str
     confidence: float
     visible: bool
+    jersey_number: str  # "" when not readable
 
 
 _CUE_SCHEMA: dict[str, Any] = {
@@ -48,26 +49,30 @@ _CUE_SCHEMA: dict[str, Any] = {
         "slip": {"type": "boolean"},
         "reaction_delay": {"type": "string", "enum": ["quick", "normal", "slow", "none", "unknown"]},
         "confidence": {"type": "number"},
+        "jersey_number": {"type": "string"},
     },
-    "required": ["visible", "orientation", "gaze", "arm_raised", "slip", "reaction_delay", "confidence"],
+    "required": ["visible", "orientation", "gaze", "arm_raised", "slip", "reaction_delay", "confidence",
+                 "jersey_number"],
     "additionalProperties": False,
 }
 
 
 def build_cue_prompt(player_id: int, moment_description: str) -> str:
-    """Prompt for one player crop (image 1) plus the full frame (image 2)."""
+    """Prompt for one context crop (image 1, player boxed in yellow) plus the full frame (image 2)."""
     return (
-        f"Image 1 is a close crop of football player #{player_id}; image 2 is the "
-        f"full broadcast frame for context. Moment: {moment_description or 'n/a'}.\n"
-        "Describe only what is visible:\n"
-        "- orientation: body orientation relative to ball and own goal (short phrase)\n"
+        "Image 1 is an enlarged crop from a football match video; the player to describe "
+        "is inside the yellow box, with nearby players and the ball for context. Image 2 "
+        f"is the full frame. Moment: {moment_description or 'n/a'}.\n"
+        "The footage is low resolution, so give your best reading and lower the confidence "
+        "rather than refusing:\n"
+        "- orientation: body orientation relative to the ball and the player's own goal (short phrase)\n"
         "- gaze: where the player is looking (short phrase)\n"
         "- arm_raised: true if an arm is raised (e.g. appealing for offside)\n"
         "- slip: true if the player slips or loses balance\n"
         "- reaction_delay: how quickly the player reacts to the play\n"
-        "- confidence: 0-1\n"
-        "If the player is not clearly visible, set visible=false, confidence=0 "
-        "and use 'unknown' for the text fields. Do not guess."
+        "- jersey_number: the shirt number if you can read it, else empty\n"
+        "- confidence: 0-1 for the whole reading\n"
+        "Set visible=false only if the boxed player is hidden behind others or cut off."
     )
 
 
@@ -81,12 +86,61 @@ def _boxes_near(tracks: list[dict[str, Any]], player_id: int, frame_idx: int, ma
     return None if best is None else {"frame_idx": best[0], "bbox": best[1]["bbox"]}
 
 
-def crop(frame: np.ndarray, bbox: list[int], padding: float = 0.3) -> np.ndarray:
-    """Crop *bbox* with *padding* on every side, clipped to the frame."""
+_CONTEXT = 1.5    # crop this many box sizes around the player: ball and neighbours in view
+_MIN_SIDE = 384   # small players are upscaled so the model has pixels to read
+
+
+def crop(frame: np.ndarray, bbox: list[int], padding: float = _CONTEXT) -> np.ndarray:
+    """Context crop around *bbox*, player boxed in yellow, upscaled to ≥ _MIN_SIDE px."""
     fh, fw = frame.shape[:2]
     x1, y1, x2, y2 = bbox
     px, py = int((x2 - x1) * padding), int((y2 - y1) * padding)
-    return frame[max(0, y1 - py):min(fh, y2 + py), max(0, x1 - px):min(fw, x2 + px)]
+    cx1, cy1 = max(0, x1 - px), max(0, y1 - py)
+    out = frame[cy1:min(fh, y2 + py), cx1:min(fw, x2 + px)].copy()
+    if out.size == 0:
+        return out
+    cv2.rectangle(out, (x1 - cx1, y1 - cy1), (x2 - cx1, y2 - cy1), (0, 255, 255), 1)
+    s = _MIN_SIDE / max(out.shape[:2])
+    return cv2.resize(out, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC) if s > 1 else out
+
+
+_GOAL_PROMPT = (
+    "This is a short football clip. Did a goal get scored in it? Answer with one JSON object "
+    'and nothing else: {"goal": true|false, "t_shot": <seconds from the start when the '
+    'scoring shot or header is struck>, "t_goal": <seconds when the ball crosses the line>, '
+    '"description": "<one sentence: how the goal was scored, e.g. low shot from the edge of '
+    'the box into the near corner>"}. Use null times if there is no goal.'
+)
+
+
+def find_goal(client, video_path: Path, duration: float) -> dict[str, Any] | None:
+    """Ask Muse Spark (watching the clip) whether and when a goal is scored.
+
+    The ball is often lost in the crowded box in the last seconds, so the goal
+    cannot be read off the tracked positions alone.
+    """
+    try:
+        r = client.spark_video_json(_GOAL_PROMPT, client.upload_file(video_path))
+    except Exception:  # noqa: BLE001 — a missing goal must not stop the cue reading
+        logger.warning("Goal question to Muse Spark failed", exc_info=True)
+        return None
+    if not r.get("goal") or r.get("t_shot") is None:
+        return None
+    t_shot = float(r["t_shot"])
+    t_goal = float(r["t_goal"]) if r.get("t_goal") is not None else t_shot
+    if not 0 <= t_shot <= t_goal <= duration + 0.5:
+        logger.warning("Goal times out of range: %s", r)
+        return None
+    return {"event_id": "goal_0", "timestamp": t_goal, "t_shot": t_shot,
+            "description": str(r.get("description", ""))}
+
+
+def players_near_goal(pitch: list[dict[str, Any]], frame_idx: int, goal_x: float, k: int = 3) -> list[int]:
+    """The *k* people (any team, keepers included) nearest the attacked goal at *frame_idx*."""
+    rows = next((f["players"] for f in pitch if f["frame_idx"] == frame_idx), [])
+    people = [p for p in rows if p["team"] in ("A", "B")]
+    people.sort(key=lambda p: (p["x_m"] - goal_x) ** 2 + (p["y_m"] - 34) ** 2)
+    return [p["player_id"] for p in people[:k]]
 
 
 def run(video_path: Path, clip_id: str) -> Path:
@@ -101,6 +155,23 @@ def run(video_path: Path, clip_id: str) -> Path:
 
     client = get_client(clip_id)
     half_s = int(round(0.5 * fps))
+
+    goal = find_goal(client, video_path, len(tracks) / fps)
+    if goal is not None:
+        events["goals"] = [goal]
+        pitch = json.loads((run_dir / "pitch.json").read_text(encoding="utf-8"))
+        shot_frame = min(int(round(goal["t_shot"] * fps)), len(tracks) - 1)
+        goal_x = 105.0 if events.get("attacking_direction") != "left" else 0.0
+        # re-runs must not stack goal moments
+        events["key_moments"] = [m for m in events.get("key_moments", []) if m.get("event_type") != "goal"]
+        events["key_moments"].append({
+            "moment_id": f"moment_{len(events.get('key_moments', []))}",
+            "frame_idx": shot_frame, "timestamp": goal["t_shot"], "event_type": "goal",
+            "player_ids": players_near_goal(pitch, shot_frame, goal_x),
+            "description": f"The scoring shot. {goal['description']}",
+        })
+        (run_dir / "events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
+        logger.info("Muse Spark: goal at %.1fs (shot %.1fs): %s", goal["timestamp"], goal["t_shot"], goal["description"])
     cues: list[PlayerCue] = []
 
     for moment in events.get("key_moments", []):
@@ -126,6 +197,7 @@ def run(video_path: Path, clip_id: str) -> Path:
                 orientation=r["orientation"], gaze=r["gaze"], arm_raised=r["arm_raised"],
                 slip=r["slip"], reaction_delay=r["reaction_delay"],
                 confidence=float(r["confidence"]), visible=r["visible"],
+                jersey_number=r["jersey_number"].strip(),
             ))
 
     out_path = run_dir / "cues.json"

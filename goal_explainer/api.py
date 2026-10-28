@@ -135,6 +135,32 @@ class MetaAPIClient:
         self._write_cache(key, {"text": text})
         return text
 
+    def spark_video_json(self, prompt: str, video_file_id: str, model: str = SPARK_MODEL) -> dict[str, Any]:
+        """Ask Muse Spark about an uploaded video; the answer must be one JSON object.
+
+        Uses the Responses API (``input_video`` + ``file_id``); its structured-output
+        shape is not documented, so the prompt asks for JSON and we parse it.
+        """
+        payload = {
+            "model": model,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt},
+                            {"type": "input_video", "file_id": video_file_id}],
+            }],
+        }
+        key = self._cache_key(payload)
+        cached = self._read_cache(key)
+        if cached is not None:
+            return cached
+        body = self._send("POST", "/responses", json=payload).json()
+        text = "".join(c.get("text", "") for item in body.get("output", []) for c in item.get("content", []) or []
+                       if c.get("type") == "output_text")
+        result = json.loads(text[text.index("{"): text.rindex("}") + 1])
+        self._write_cache(key, result)
+        return result
+
     def spark_json(
         self,
         prompt: str,

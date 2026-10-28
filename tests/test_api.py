@@ -113,3 +113,43 @@ def test_find_duplicates_and_drop_boxes():
     drop_boxes(tracks, 1009, pairs[(1009, 4000)])
     assert all(o["object_id"] != 1009 for tf in tracks[:6] for o in tf["objects"])
     assert [o["object_id"] for o in tracks[6]["objects"]] == [1009]
+
+
+def test_resolve_duplicates_when_one_id_is_in_two_pairs(tmp_path, monkeypatch):
+    # 1009 doubles both a keeper (4000) and a black player (2001); resolving the
+    # first pair drops 1009 from frames the second pair was found in.
+    from goal_explainer import track
+    def frame(i):
+        return {"frame_idx": i, "timestamp": i / 25, "objects": [
+            {"object_id": 1009, "cls": "player", "bbox": [100, 100, 120, 150]},
+            {"object_id": 4000, "cls": "goalkeeper", "bbox": [101, 101, 121, 151]},
+            {"object_id": 2001, "cls": "player", "bbox": [100, 100, 121, 150]},
+        ]}
+    tracks = [frame(i) for i in range(6)]
+    prompts = [("soccer ball", "ball", None), ("player in white", "player", "A"), ("player in black", "player", "B"),
+               ("player in yellow", "goalkeeper", "A"), ("player in light blue", "goalkeeper", "B")]
+    monkeypatch.setattr(track, "read_frame", lambda *a: None)
+    picks = iter(["light blue", "black", "black"])
+    monkeypatch.setattr(track, "pick_shirt", lambda *a: next(picks))
+    track.resolve_duplicates(None, tmp_path / "v.mp4", tracks, prompts)
+    assert all(1009 not in {o["object_id"] for o in tf["objects"]} for tf in tracks)
+
+
+def test_find_goal_validates_spark_answer(tmp_path):
+    from goal_explainer.read import find_goal, players_near_goal
+
+    class Fake:
+        def __init__(self, answer): self.answer = answer
+        def upload_file(self, _): return "file-1"
+        def spark_video_json(self, prompt, file_id): return self.answer
+
+    ok = find_goal(Fake({"goal": True, "t_shot": 20.5, "t_goal": 21.0, "description": "near post"}), tmp_path, 24.0)
+    assert ok == {"event_id": "goal_0", "timestamp": 21.0, "t_shot": 20.5, "description": "near post"}
+    assert find_goal(Fake({"goal": False, "t_shot": None}), tmp_path, 24.0) is None
+    assert find_goal(Fake({"goal": True, "t_shot": 30.0, "t_goal": 31.0}), tmp_path, 24.0) is None  # past the end
+    pitch = [{"frame_idx": 5, "players": [
+        {"player_id": 1, "team": "A", "x_m": 100.0, "y_m": 34.0},
+        {"player_id": 2, "team": "B", "x_m": 104.0, "y_m": 34.0},
+        {"player_id": 3, "team": "A", "x_m": 60.0, "y_m": 34.0},
+        {"player_id": -1, "team": "ball", "x_m": 105.0, "y_m": 34.0}]}]
+    assert players_near_goal(pitch, 5, 105.0, k=2) == [2, 1]

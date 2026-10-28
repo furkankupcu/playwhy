@@ -882,91 +882,42 @@ def build_pass_chain(
 # Key moments aggregation
 # ---------------------------------------------------------------------------
 
+_MAX_LOST_MAN = 4  # each key moment costs Muse Spark calls; a goal needs a handful
+
+
 def collect_key_moments(
     passes: list[PassEvent],
     shots: list[ShotEvent],
     lost_man: list[KeyMoment],
-    open_lanes: list[OpenLane],
+    attackers: set[int] | None = None,
 ) -> list[KeyMoment]:
-    """Merge all significant events into a unified list of :class:`KeyMoment`.
+    """Key moments for Muse Spark to read: every pass and shot, plus the last few
+    lost-man moments of *attackers* (player ids) before the final event.
 
-    Args:
-        passes: Detected pass events.
-        shots: Detected shot events.
-        lost_man: Lost-man moments.
-        open_lanes: Open-lane records (only *clear* lanes are promoted).
-
-    Returns:
-        Sorted list of key moments.
+    Open lanes stay in events.json as evidence but are not key moments: one per
+    frame flooded the list (99 moments, 32 min of reading on a 24 s clip).
     """
     moments: list[KeyMoment] = []
-    mid = 0
-
     for pe in passes:
-        moments.append(
-            KeyMoment(
-                moment_id=mid,
-                frame_idx=pe.frame_idx,
-                timestamp=pe.timestamp,
-                event_type="pass",
-                player_ids=[pe.passer_id, pe.receiver_id],
-                description=(
-                    f"Pass from player {pe.passer_id} to {pe.receiver_id} "
-                    f"({'successful' if pe.success else 'failed'})."
-                ),
-            )
-        )
-        mid += 1
-
+        moments.append(KeyMoment(
+            moment_id=0, frame_idx=pe.frame_idx, timestamp=pe.timestamp, event_type="pass",
+            player_ids=[pe.passer_id, pe.receiver_id],
+            description=f"Pass from player {pe.passer_id} to {pe.receiver_id}.",
+        ))
     for se in shots:
-        moments.append(
-            KeyMoment(
-                moment_id=mid,
-                frame_idx=se.frame_idx,
-                timestamp=se.timestamp,
-                event_type="shot",
-                player_ids=[se.shooter_id],
-                description=(
-                    f"Shot by player {se.shooter_id} from {se.distance_m:.1f}m, "
-                    f"angle {se.angle_deg:.1f}°."
-                ),
-            )
-        )
-        mid += 1
-
-    for lm in lost_man:
-        lm_copy = KeyMoment(
-            moment_id=mid,
-            frame_idx=lm.frame_idx,
-            timestamp=lm.timestamp,
-            event_type=lm.event_type,
-            player_ids=lm.player_ids,
-            description=lm.description,
-        )
-        moments.append(lm_copy)
-        mid += 1
-
-    # Promote notable open lanes (clear lanes only, deduplicated per frame)
-    seen_frames: set[int] = set()
-    for ol in open_lanes:
-        if ol.lane_clear and ol.frame_idx not in seen_frames:
-            moments.append(
-                KeyMoment(
-                    moment_id=mid,
-                    frame_idx=ol.frame_idx,
-                    timestamp=0.0,  # will be enriched by caller if needed
-                    event_type="run",
-                    player_ids=[ol.from_id, ol.to_id],
-                    description=(
-                        f"Open lane from player {ol.from_id} to {ol.to_id} "
-                        f"(nearest opponent {ol.nearest_opponent_dist:.1f}m away)."
-                    ),
-                )
-            )
-            mid += 1
-            seen_frames.add(ol.frame_idx)
+        moments.append(KeyMoment(
+            moment_id=0, frame_idx=se.frame_idx, timestamp=se.timestamp, event_type="shot",
+            player_ids=[se.shooter_id],
+            description=f"Shot by player {se.shooter_id} from {se.distance_m:.1f}m, angle {se.angle_deg:.1f}°.",
+        ))
+    end_t = max((m.timestamp for m in moments), default=float("inf"))
+    candidates = [m for m in lost_man
+                  if (attackers is None or m.player_ids[0] in attackers) and m.timestamp <= end_t]
+    moments += sorted(candidates, key=lambda m: m.timestamp)[-_MAX_LOST_MAN:]
 
     moments.sort(key=lambda m: m.frame_idx)
+    for i, m in enumerate(moments):
+        m.moment_id = i
     return moments
 
 
@@ -1021,7 +972,11 @@ def run(clip_id: str) -> Path:
     # Chain & key moments
     shot = shots[0] if shots else None
     pass_chain = build_pass_chain(passes, shot)
-    key_moments = collect_key_moments(passes, shots, lost_man, open_lanes)
+    # Attacking team = the team that had the ball most
+    from collections import Counter
+    teams = Counter(ev.team for ev in possession).most_common(1)
+    attackers = {p.player_id for p in player_positions if teams and p.team == teams[0][0]}
+    key_moments = collect_key_moments(passes, shots, lost_man, attackers or None)
 
     # ---- Serialize --------------------------------------------------------
 

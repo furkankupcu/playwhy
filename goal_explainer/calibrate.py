@@ -839,7 +839,8 @@ def run(
             m = "orb"
 
         # --- Step 3: Re-fit to SAM pitch regions (removes ORB drift), seeded with H_curr ---
-        if i % _REFIT_EVERY == 0 and (i > 0 or cost is None):
+        # Hand-placed points are trusted: no SAM refit may override them
+        if manual_points is None and i % _REFIT_EVERY == 0 and (i > 0 or cost is None):
             fit = fit_regions(sam_regions(client, frame), prior=H_curr if i > 0 else None,
                               extra_candidates=[H_curr])
             if fit is not None and fit[1] <= _REGION_COST_OK:
