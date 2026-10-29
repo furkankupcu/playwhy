@@ -532,7 +532,9 @@ def _project_ok(pts: np.ndarray, H: np.ndarray) -> np.ndarray | None:
 
 _LINE_WIDTH = 640      # line cues need more pixels than region cues
 _LINE_CAP_PX = 15.0    # distances beyond this count as "no line here"
-_PLAYER_WIDTH_M = 0.9  # a player's box is about this wide on the ground (arms, stride)
+# A player's box is this wide on the ground: ~0.6 m on sharp 4K, ~1.1 m on blurry footage.
+# Only widths outside the band are penalised: a target value pulled right fits off by metres.
+_PLAYER_WIDTH_M = (0.5, 1.3)
 _LINE_WEIGHT = 1.0
 _SCALE_WEIGHT = 1.0
 
@@ -610,7 +612,7 @@ class _FitContext:
         return float(precision + recall) / (2 * _LINE_CAP_PX)
 
     def player_width_m(self, H: np.ndarray) -> float | None:
-        """Median ground width (m) of the player boxes under *H*; ~0.9 m when H is right."""
+        """Median ground width (m) of the player boxes under *H*; 0.5–1.3 m when H is right."""
         if not self.people:
             return None
         try:
@@ -633,7 +635,9 @@ class _FitContext:
             cost += _LINE_WEIGHT * self.line_cost(H)
         wm = self.player_width_m(H)
         if wm is not None:
-            cost += _SCALE_WEIGHT * (min(1.0, abs(np.log(max(wm, 1e-3) / _PLAYER_WIDTH_M)) / np.log(2.5)))
+            lo, hi = _PLAYER_WIDTH_M
+            off = max(0.0, np.log(max(wm, 1e-3) / hi), np.log(lo / max(wm, 1e-3)))
+            cost += _SCALE_WEIGHT * min(1.0, off / np.log(2.0))
         if len(self.goals):
             centres = _project_ok(_GOAL_CENTRES, Hs)
             if centres is None:
