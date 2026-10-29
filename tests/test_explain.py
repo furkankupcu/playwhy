@@ -146,3 +146,15 @@ def test_player_names_use_colour_number_and_role():
     assert names == {1001: "white player 1", 2003: "blue player 1", 2004: "blue #6", 4000: "blue keeper"}
     prompt = build_explanation_prompt({"passes": []}, [], names)
     assert '"2004": "blue #6"' in prompt and "never by id" in prompt
+
+
+def test_pass_facts_and_strong_cues():
+    from goal_explainer.explain import add_pass_facts, strong_cues
+    ev = {"attacking_direction": "right",
+          "passes": [{"frame_idx": 5, "start_xy": [80.6, 49.9], "end_xy": [67.8, 46.0]}],
+          "key_moments": [{"event_type": "pass", "frame_idx": 5, "description": "Pass from player 1 to 2."}]}
+    add_pass_facts(ev)
+    assert ev["passes"][0]["direction"] == "backward" and ev["passes"][0]["length_m"] == 13.4
+    assert ev["key_moments"][0]["description"].endswith("13.4 m, backward.")
+    cues = [{"visible": True, "confidence": 0.6}, {"visible": True, "confidence": 0.4}, {"visible": False, "confidence": 0.9}]
+    assert strong_cues(cues) == cues[:1]

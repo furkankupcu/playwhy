@@ -83,6 +83,8 @@ _EXPLANATION_SCHEMA: dict[str, Any] = {
 
 # A claim's time window must lie within this many seconds of one of its evidence items.
 _EVIDENCE_SLACK_S = 1.5
+# Weaker cue reads were the source of invented details ("arrives late"); keep them out.
+_MIN_CUE_CONFIDENCE = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +178,11 @@ def build_explanation_prompt(
         "- t_start and t_end must be in seconds within the clip duration.\n"
         "- t_start must be strictly less than t_end.\n"
         "- Each claim should reference specific players by their IDs.\n"
-        "- A cue with visible=false or confidence < 0.5 is not evidence."
+        "- State pass length and direction only as given (length_m, direction); never call a "
+        "pass long, a switch or a diagonal unless those numbers say so.\n"
+        "- Do not describe speed (sprint, burst), intent or anything the data does not state.\n"
+        "- The goal moment's player_ids are the players nearest the goal, not the scorer. "
+        "Name a scorer only if a shot event gives a shooter_id."
     )
 
 
@@ -202,6 +208,28 @@ def _collect_valid_ids(
     for cue in cues:
         ids.add(_cue_id(cue))
     return ids
+
+
+def strong_cues(cues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cues good enough to be evidence: visible and read with enough confidence."""
+    return [c for c in cues if c.get("visible") and c.get("confidence", 0) >= _MIN_CUE_CONFIDENCE]
+
+
+def add_pass_facts(events: dict[str, Any]) -> None:
+    """Give every pass (and its key moment) a length and a direction relative to the attack,
+    so the model has no reason to guess what kind of pass it was."""
+    sign = -1.0 if events.get("attacking_direction") == "left" else 1.0
+    facts: dict[int, str] = {}
+    for p in events.get("passes", []):
+        dx, dy = (b - a for a, b in zip(p["start_xy"], p["end_xy"]))
+        length = (dx * dx + dy * dy) ** 0.5
+        along = sign * dx
+        p["length_m"] = round(length, 1)
+        p["direction"] = "forward" if along > 0.5 * length else "backward" if along < -0.5 * length else "square"
+        facts[p["frame_idx"]] = f" {p['length_m']} m, {p['direction']}."
+    for m in events.get("key_moments", []):
+        if m.get("event_type") == "pass" and m.get("frame_idx") in facts and "m," not in m.get("description", ""):
+            m["description"] = m.get("description", "") + facts[m["frame_idx"]]
 
 
 def _cue_id(cue: dict[str, Any]) -> str:
@@ -349,7 +377,9 @@ def run(video_path: Path, clip_id: str) -> Path:
     logger.info("Clip duration: %.2f s", clip_duration)
 
     tracks = json.loads((run_dir / "tracks.json").read_text(encoding="utf-8"))
-    names = player_names(tracks, cues)
+    names = player_names(tracks, cues)  # shirt numbers from every read, evidence only from strong ones
+    cues = strong_cues(cues)
+    add_pass_facts(events)
     prompt = build_explanation_prompt(events, cues, names)
 
     explanation = get_client(clip_id).spark_json(prompt, _EXPLANATION_SCHEMA)
