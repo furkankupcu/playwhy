@@ -580,9 +580,14 @@ class _FitContext:
         if frame is not None and grown is not None:
             ls = _LINE_WIDTH / w
             self.L = np.diag([ls, ls, 1.0])
-            # Threshold at full size: downscaling first blends thin lines into the grass.
+            # Thin bright structures (top-hat), not an absolute "white": sunlit and shaded
+            # turf stripes make a fixed brightness threshold miss most of the markings.
+            # Done at full size: downscaling first blends thin lines into the grass.
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            full_lines = ((hsv[..., 2] > 170) & (hsv[..., 1] < 60)).astype(np.uint8) & grown
+            k = max(5, int(round(frame.shape[1] / 140)) | 1)
+            tophat = cv2.morphologyEx(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.MORPH_TOPHAT,
+                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+            full_lines = ((tophat > 30) & (hsv[..., 1] < 90)).astype(np.uint8) & grown
             for x1, y1, x2, y2 in self.people:
                 full_lines[int(y1):int(y2) + 1, int(x1):int(x2) + 1] = 0
             size_l = (_LINE_WIDTH, max(1, round(h * ls)))
@@ -653,6 +658,106 @@ class _FitContext:
         return cost
 
 
+# Pitch lines by direction: x = const runs parallel to the goal line, y = const to the touchline.
+_X_LINES = (0.0, 5.5, 16.5, 52.5, 88.5, 99.5, 105.0)
+_Y_LINES = (0.0, 13.84, 24.84, 43.16, 54.16, 68.0)
+_HYP_SEGMENTS = 8           # longest distinct image lines used
+_HYP_KEEP = 300             # coarse-scored hypotheses passed on to the full cost
+_INLIER_PX = 3.0            # a template point this close to a line pixel counts
+
+
+def _segment_families(lines: np.ndarray) -> list[list[np.ndarray]]:
+    """Long straight segments in the line mask, split into two direction families.
+
+    Returns two lists of homogeneous image lines (a, b, c), a² + b² = 1, longest first.
+    """
+    h, w = lines.shape
+    segs = cv2.HoughLinesP(lines * 255, 1, np.pi / 360, threshold=20,
+                           minLineLength=max(15, w // 21), maxLineGap=max(6, w // 50))
+    if segs is None:
+        return []
+    kept: list[tuple[float, np.ndarray]] = []  # (angle, line), longest first
+    for x1, y1, x2, y2 in sorted(segs[:, 0].astype(np.float64).tolist(),
+                                 key=lambda q: -np.hypot(q[2] - q[0], q[3] - q[1])):
+        line = np.cross([x1, y1, 1.0], [x2, y2, 1.0])
+        line /= np.hypot(line[0], line[1])
+        ang = np.arctan2(y2 - y1, x2 - x1) % np.pi
+        # the two edges of one painted line, or its broken dashes, are one line
+        if any(abs((ang - a + np.pi / 2) % np.pi - np.pi / 2) < np.radians(4) and abs(line[2] - l[2]) < w / 100
+               for a, l in kept):
+            continue
+        kept.append((ang, line))
+    kept = kept[:_HYP_SEGMENTS]
+    if len(kept) < 4:
+        return []
+    angles = np.array([[np.cos(2 * a), np.sin(2 * a)] for a, _ in kept], np.float32)
+    _, labels, _ = cv2.kmeans(angles, 2, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-3),
+                              5, cv2.KMEANS_PP_CENTERS)
+    families = [[l for (_, l), k in zip(kept, labels.ravel()) if k == c] for c in (0, 1)]
+    return families if all(len(f) >= 2 for f in families) else []
+
+
+def line_hypotheses(lines: np.ndarray, on_pitch: np.ndarray, people: list[list[float]]) -> list[np.ndarray]:
+    """Pitch → image homographies (in *lines* pixels) from pairs of detected lines.
+
+    Two lines of each direction family meet in four corners; matching them to every
+    pair of template lines (both families, both orders) gives candidate fits. This
+    reaches the right basin when region masks and keypoints do not (a corner of the
+    pitch, strong perspective). Fits whose players come out < 0.4 m or > 2 m wide
+    are skipped; the rest are ranked by template points on a line minus half the
+    on-pitch points that miss every line, and the best few hundred returned for
+    the full cost to rank. *people* are player boxes in *lines* pixels.
+    """
+    from itertools import combinations
+
+    families = _segment_families(lines)
+    if not families:
+        return []
+    dt = cv2.distanceTransform(1 - lines, cv2.DIST_L2, 3)
+    h, w = lines.shape
+    pts = _TEMPLATE_PTS[::2].reshape(-1, 2)  # every metre
+    pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+    feet_l = np.array([[x1, y2, 1.0] for x1, _, _, y2 in people]).reshape(-1, 3)
+    feet_r = np.array([[x2, y2, 1.0] for _, _, x2, y2 in people]).reshape(-1, 3)
+    scored: list[tuple[float, np.ndarray]] = []
+    for fam_x, fam_y in (families, families[::-1]):
+        for lx in combinations(fam_x, 2):
+            for ly in combinations(fam_y, 2):
+                corners = np.array([np.cross(a, b) for a in lx for b in ly])  # (x0,y0) (x0,y1) (x1,y0) (x1,y1)
+                if np.any(np.abs(corners[:, 2]) < 1e-9):
+                    continue
+                img = (corners[:, :2] / corners[:, 2:3]).astype(np.float32)
+                if np.abs(img).max() > 20 * w:
+                    continue
+                for xa, xb in combinations(_X_LINES, 2):
+                    for ya, yb in combinations(_Y_LINES, 2):
+                        for x0, x1 in ((xa, xb), (xb, xa)):
+                            for y0, y1 in ((ya, yb), (yb, ya)):
+                                src = np.float32([[x0, y0], [x0, y1], [x1, y0], [x1, y1]])
+                                H = cv2.getPerspectiveTransform(src, img)
+                                if H is None or not _keeps_orientation(H, ((x0 + x1) / 2, (y0 + y1) / 2)):
+                                    continue
+                                if len(feet_l):
+                                    Hi = np.linalg.inv(H)
+                                    gl, gr = feet_l @ Hi.T, feet_r @ Hi.T
+                                    width = np.median(np.hypot(gl[:, 0] / gl[:, 2] - gr[:, 0] / gr[:, 2],
+                                                               gl[:, 1] / gl[:, 2] - gr[:, 1] / gr[:, 2]))
+                                    if not 0.4 <= width <= 2.0:
+                                        continue
+                                q = pts_h @ H.T
+                                z = q[:, 2]
+                                ok = z > 1e-9
+                                u, v = q[ok, 0] / z[ok], q[ok, 1] / z[ok]
+                                inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+                                ui, vi = u[inside].astype(int), v[inside].astype(int)
+                                near = dt[vi, ui] < _INLIER_PX
+                                score = np.count_nonzero(near) - 0.5 * np.count_nonzero(~near & (on_pitch[vi, ui] > 0))
+                                if score > 0:
+                                    scored.append((score, H))
+    scored.sort(key=lambda t: -t[0])
+    return [H for _, H in scored[:_HYP_KEEP]]
+
+
 def fit_regions(
     regions: dict[str, np.ndarray],
     extra_candidates: list[np.ndarray] = (),
@@ -665,14 +770,20 @@ def fit_regions(
     *frame* adds a white-line fit and *people* (player boxes, frame pixels) a scale
     check: SAM regions alone let a shrunken whole pitch fill the visible grass.
     *prior* (e.g. the tracked homography of this frame) penalises jumps away from it.
-    The returned cost is the region cost, or 1.0 when the players' implied size is
-    implausible (a wrong scale can still have a near-perfect region overlap).
+    The returned cost is the full cost without the prior term (regions + lines +
+    scale + goals; lower is better, see _FIT_COST_OK), or 2.0 when the players'
+    implied size is implausible (a wrong scale can still overlap the regions well).
     """
     if "penalty box" not in regions and "soccer field" not in regions:
         return None
     ctx = _FitContext(regions, frame, people, prior)
 
     candidates = list(extra_candidates) + ([prior] if prior is not None else [])
+    if prior is None and ctx.lines is not None:
+        # First frame: hypotheses from detected line pairs (see line_hypotheses)
+        L_inv = np.linalg.inv(ctx.L)
+        people_l = [[v * ctx.L[0, 0] for v in b] for b in ctx.people]
+        candidates += [L_inv @ H for H in line_hypotheses(ctx.lines, ctx.on_pitch, people_l)]
     for name, template in (("penalty box", _PA), ("soccer field", _FIELD)):
         q = _quad(regions[name]) if name in regions else None
         if q is not None:
@@ -712,15 +823,20 @@ def fit_regions(
                 best_x, best_c = x, c
     H = to_h(best_x)
     wm = ctx.player_width_m(H)
-    plausible = wm is None or 0.4 <= wm <= 2.0
-    return H, region_cost(ctx.S @ H, ctx.small) if plausible else 1.0
+    if wm is not None and not 0.4 <= wm <= 2.0:
+        return H, 2.0
+    ctx.prior = None
+    return H, float(ctx.cost(H))
 
 
 # ---------------------------------------------------------------------------
 # Initial homography (orchestrates paths a → b → raise)
 # ---------------------------------------------------------------------------
 
-_REGION_COST_OK = 0.45  # mean (1 − IoU). Good fits score ~0.1–0.35: SAM's field mask includes the green run-off
+# Full fit cost (regions + lines + scale + goals). Right fits measured 0.6–0.7 on a
+# narrow panorama crop; wrong ones 0.7–2. Above this a frame is marked unreliable.
+_FIT_COST_OK = 1.0
+_ANCHORS = 4  # frames spread over the clip that are calibrated from scratch
 
 
 def compute_initial_homography(
@@ -750,7 +866,7 @@ def compute_initial_homography(
     if fit is not None:
         H, cost = fit
         logger.info("Region fit cost %.3f", cost)
-        if cost <= _REGION_COST_OK:
+        if cost <= _FIT_COST_OK:
             return H, "sam_regions", cost
 
     # --- Path (b): Hough lines + template matching ---
@@ -926,59 +1042,88 @@ def run(
         tracks_by_idx = {tf["frame_idx"]: tf for tf in frames_list}
 
     client = get_client(clip_id)
-    results: list[HomographyResult] = []
-    H_prev: np.ndarray | None = None
-    prev_frame: np.ndarray | None = None
-    cost = 1.0
 
-    for i, full in enumerate(iter_frames(video_path)):
+    def small(full: np.ndarray) -> tuple[np.ndarray, float]:
         # Work at ≤ _CALIB_WIDTH: SAM segments pitch regions badly on 4K input, and
         # ORB on 4K is ~9× slower. H is scaled back to full resolution when saved.
         s = min(1.0, _CALIB_WIDTH / full.shape[1])
-        frame = cv2.resize(full, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else full
-        to_full = np.diag([1 / s, 1 / s, 1.0])
-        people = [[v * s for v in o["bbox"]] for o in (tracks_by_idx.get(i) or {}).get("objects", [])
-                  if o.get("cls") in ("player", "goalkeeper")]
-        if i == 0:
-            # --- Step 1: Initial homography on first frame ---
-            if manual_points is not None and len(manual_points) >= 4:
-                # Path (c): manual. Points are {"px": [x, y], "pitch": [x_m, y_m]} in full-res px.
-                H_curr = manual_calibration(
-                    frame,
-                    [(p["px"][0] * s, p["px"][1] * s) for p in manual_points],
-                    [tuple(p["pitch"]) for p in manual_points],
-                )
-                m, cost = "manual", None
-            else:
-                # Paths (a) then (b) — raises CalibrationError so the UI can offer (c)
-                H_curr, m, cost = compute_initial_homography(client, frame, people)
-        else:
-            # --- Step 2: ORB propagation between refits ---
+        return (cv2.resize(full, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else full), s
+
+    def people_at(i: int, s: float) -> list[list[float]]:
+        return [[v * s for v in o["bbox"]] for o in (tracks_by_idx.get(i) or {}).get("objects", [])
+                if o.get("cls") in ("player", "goalkeeper")]
+
+    from .track import video_info
+    _, n_frames = video_info(video_path)
+    anchors_at = set() if manual_points else {int(round(x)) for x in np.linspace(0, max(0, n_frames - 1), _ANCHORS)}
+
+    # --- Pass 1: camera motion between frames (ORB), and from-scratch fits on a few
+    # frames. The clearest frame becomes the anchor: a crowded first frame no longer
+    # decides the whole clip.
+    deltas: list[np.ndarray] = [np.eye(3)]  # deltas[i] maps image i-1 → image i
+    anchor: tuple[float, int, np.ndarray, str] | None = None
+    prev = None
+    for i, full in enumerate(iter_frames(video_path)):
+        frame, s = small(full)
+        if i == 0 and manual_points is not None and len(manual_points) >= 4:
+            # Path (c): manual. Points are {"px": [x, y], "pitch": [x_m, y_m]} in full-res px.
+            H = manual_calibration(frame, [(p["px"][0] * s, p["px"][1] * s) for p in manual_points],
+                                   [tuple(p["pitch"]) for p in manual_points])
+            anchor = (0.0, 0, H, "manual")
+        if i > 0:
             orb_mask = cv2.resize(_player_mask_from_tracks(tracks_by_idx.get(i - 1), full.shape),
                                   (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
-            H_curr = track_homography_orb(prev_frame, frame, H_prev, mask=orb_mask)
-            m = "orb"
+            deltas.append(track_homography_orb(prev, frame, np.eye(3), mask=orb_mask))
+        if i in anchors_at:
+            try:
+                H, m, c = compute_initial_homography(client, frame, people_at(i, s))
+                c = c if c is not None else _FIT_COST_OK  # Hough path: no cost, accept but rank last
+                logger.info("Anchor candidate frame %d: %s, cost %.3f", i, m, c)
+                if anchor is None or c < anchor[0]:
+                    anchor = (c, i, H, m)
+            except CalibrationError:
+                logger.info("Anchor candidate frame %d: no fit", i)
+        prev = frame
+    if anchor is None:
+        raise CalibrationError("Automatic calibration failed on every anchor frame. Use 4 manual points.")
+    cost, k, H_k, method = anchor
+    manual = method == "manual"
+    logger.info("Anchor: frame %d (%s, cost %.3f)", k, method, cost)
 
-        # --- Step 3: Re-fit to SAM pitch regions (removes ORB drift), seeded with H_curr ---
-        # Hand-placed points are trusted: no SAM refit may override them
-        if manual_points is None and i % _REFIT_EVERY == 0 and (i > 0 or cost is None):
-            fit = fit_regions(sam_regions(client, frame), prior=H_curr if i > 0 else None,
-                              extra_candidates=[H_curr], frame=frame, people=people)
-            if fit is not None and fit[1] <= _REGION_COST_OK:
+    # Frame 0's homography: walk the camera motion back from the anchor.
+    H0 = H_k
+    for i in range(k, 0, -1):
+        H0 = np.linalg.inv(deltas[i]) @ H0
+
+    # --- Pass 2: forward from frame 0, re-fitting to SAM regions every _REFIT_EVERY
+    # frames (removes ORB drift); hand-placed points are trusted and never re-fitted.
+    results: list[HomographyResult] = []
+    H_curr = H0
+    cost = None if manual else cost
+    for i, full in enumerate(iter_frames(video_path)):
+        frame, s = small(full)
+        to_full = np.diag([1 / s, 1 / s, 1.0])
+        if i > 0:
+            H_curr = deltas[i] @ H_curr
+        m = method if i == k else ("orb" if i else "anchor-propagated")
+        if i == k:
+            H_curr = H_k  # exact anchor fit, no accumulated motion error
+        elif not manual and i % _REFIT_EVERY == 0:
+            fit = fit_regions(sam_regions(client, frame), prior=H_curr, extra_candidates=[H_curr],
+                              frame=frame, people=people_at(i, s))
+            if fit is not None and fit[1] <= _FIT_COST_OK:
                 H_curr, cost = fit
-                m = m if i == 0 else "sam_regions"
-            elif cost is not None:
-                cost = fit[1] if fit is not None else 1.0
+                m = "sam_regions"
+            elif fit is not None:
+                cost = fit[1]
 
-        # --- Step 4: Reliability = how well the template covers SAM's regions at the last fit ---
         results.append(HomographyResult(
             frame_idx=i,
             H=(to_full @ H_curr).tolist(),
             method=m,
-            error=round(cost, 3) if cost is not None else 0.0,
-            reliable=cost is None or cost <= _REGION_COST_OK,
+            error=round(float(cost), 3) if cost is not None else 0.0,
+            reliable=bool(cost is None or cost <= _FIT_COST_OK),
         ))
-        H_prev, prev_frame = H_curr, frame
 
     if not results:
         raise CalibrationError("No frames read from video.")

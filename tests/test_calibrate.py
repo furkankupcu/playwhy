@@ -78,3 +78,15 @@ def test_goals_break_quarter_turn_ambiguity():
     half_turn = np.array([[-1, 0, 105], [0, -1, 68], [0, 0, 1]], np.float64)
     errs = [np.abs(got - cv2.perspectiveTransform(probe, G)).max() for G in (true_H, true_H @ half_turn)]
     assert min(errs) < 15.0  # px
+
+
+def test_fit_cost_is_plain_float_for_json():
+    import json
+    true_H = cv2.getPerspectiveTransform(
+        np.float32([[0, 0], [105, 0], [105, 68], [0, 68]]),
+        np.float32([[100, 420], [760, 420], [600, 150], [250, 150]]),
+    )
+    regions = {n: _render(true_H, p, (478, 848)) for n, p in REGION_TEMPLATES.items()}
+    _, cost = fit_regions(regions)
+    assert type(cost) is float
+    json.dumps({"error": cost, "reliable": bool(cost <= 1.0)})

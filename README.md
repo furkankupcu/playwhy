@@ -35,7 +35,7 @@ clip.mp4 → 1 track → 2 calibrate → 3 geometry → 4 read → 5 explain →
 | Step | Meta model | What happens |
 |---|---|---|
 | **1 Track** | Muse Spark + SAM 3.1 | Muse Spark reads the shirt colour of both teams, both keepers and the referee from the first frame. SAM 3.1 tracks each one with a colour prompt (`"player in light blue"`). Role prompts like `"goalkeeper"` found nothing, and `"referee"` boxed a player. When two prompts box the same person, Muse Spark looks at the crop and picks the right kit. |
-| **2 Calibrate** | SAM 3.1 (+ Muse Spark seed) | SAM 3.1 segments the field, penalty box, centre circle and goals. The pitch template is fitted to those regions, to the white lines on the pitch, and to a scale check (players must come out 0.5–1.3 m wide). It is refitted every 0.5 s, and ORB tracks the camera in between. A 4-point manual fallback exists in the UI. |
+| **2 Calibrate** | SAM 3.1 (+ Muse Spark seed) | SAM 3.1 segments the field, penalty box, centre circle and goals. Candidate fits come from those masks, from Muse Spark keypoints, and from pairs of detected white lines matched to the template's lines. Each is scored on region overlap, white-line alignment on the pitch, and a scale check (players must come out 0.5–1.3 m wide). Four frames spread over the clip are calibrated from scratch. The clearest one becomes the anchor, and camera motion (ORB) carries it forwards and backwards, refitted every 0.5 s. A 4-point manual fallback exists in the UI. |
 | **3 Geometry** | — | Pitch positions, possession, passes (the ball must travel ≥ 3 m), shots (the ball must reach the goal mouth), the offside line at each pass, open lanes, lost markers. A lofted ball's ground track is interpolated between touches, because its projection lands far behind the real spot. |
 | **4 Read** | Muse Spark (video + images) | Muse Spark watches the whole clip to find the goal and the shot. The ball is often lost in a crowded box, so positions alone miss it. Then, for ~10 key moments, it reads context crops (upscaled, player boxed): orientation, gaze, raised arm, slip, reaction, shirt number, each with a confidence. |
 | **5 Explain** | Muse Spark | Writes 3–6 claims and a summary under a JSON schema, citing evidence ids. A code validator drops unsupported or mistimed claims. |
@@ -49,10 +49,10 @@ Everything is cached on disk per request, so re-running a step costs nothing.
 
 | Clip | Reference | Median error |
 |---|---|---|
-| Phone video from the stands, 4K, most of the pitch visible | earlier fit, verified by eye | **1.0 m** |
-| SoccerTrack v2 goal, panorama cropped to the box (only one corner of the pitch visible) | dataset's hand-placed keypoints | **15–40 m — fails** (frames 0 / 150 / 300 / 450: 15, 17, 37, 40 m) |
+| Phone video from the stands, 4K, most of the pitch visible, 652 frames | earlier fit, verified by eye | **1.9 m** (0.9–2 m for most of the clip; up to 5.7 m in the last seconds, where the camera pans fast) |
+| SoccerTrack v2 goal, distorted panorama cropped to the box (one corner of the pitch visible), 600 frames | dataset's hand-placed keypoints | **11.9 m**, steady across the clip (11.3–12.8 m) |
 
-The second row is the honest weak spot. When only a corner of the pitch is in view, the fit can lock onto the wrong part of the template. There the app falls back to its 4-point manual calibration. The SoccerTrack demo uses the dataset's own keypoints through that same path. Reproduce with `python -m eval.calib_eval`.
+The second row is the weak spot. Before the anchor-frame and line-pair search, single-frame fits on this crop scattered between 15 and 40 m. No single homography fits a stitched panorama exactly: the hand-keypoint reference itself misses its own points by up to 26 px at the edges, and on the anchor frame our fit matches the white lines more closely than the reference does. So part of the 12 m is the reference, not the fit. The SoccerTrack demo still uses the dataset's keypoints through the 4-point manual path, so its positions come from the reference, not from our fit. Reproduce with `python -m eval.calib_eval`.
 
 **Goal clip (SoccerTrack v2, 24 s):**
 
@@ -61,14 +61,14 @@ The second row is the honest weak spot. When only a corner of the pitch is in vi
 | Goal found by Muse Spark from the video | shot 19.3 s, goal 20.0 s (dataset label ≈ 21 s, clip start ±1 s) |
 | Player readings Muse Spark could make | 21 / 21 (was 0 / 198 before context crops + upscaling) |
 | Key moments read | 10 (was 99 before capping) |
-| Pipeline time | ~10 min (track 1.5, calibrate 1–8, read 5, explain 0.3, graph video 4) |
+| Pipeline time | ~10 min with hand keypoints (track 1.5, read 5, explain 0.3, graph video 4); automatic calibration adds ~4 min (13 min on a 4K phone clip) |
 | API cost per clip | ≈ $1 |
 
 **Phone clip (corner kick, 22 s, 4K):** both teams 10 + 10 outfield players, both keepers and the referee found on frame 300. The two passes it detects are the real corner delivery and the ball played back wide.
 
 ## Limits
 
-- **Narrow views.** Calibration needs a good part of the pitch in view (see above). Fully automatic calibration on tight broadcast close-ups is not solved.
+- **Narrow views.** With only a corner of the pitch in view, automatic calibration is off by metres (see above). Use the 4-point fallback for those clips. Tight broadcast close-ups are not solved.
 - **Small players.** Below ~40 px tall, Muse Spark's readings get vague (confidence ~0.4). Film in 4K from high in the stands if you can.
 - **Not verified against ground-truth events.** The explanation's tactical claims have not been checked line by line against the footage.
 - **Speed.** ~10 minutes per 20 s clip; not live.
