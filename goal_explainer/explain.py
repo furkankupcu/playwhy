@@ -354,6 +354,7 @@ def run(video_path: Path, clip_id: str) -> Path:
 
     explanation = get_client(clip_id).spark_json(prompt, _EXPLANATION_SCHEMA)
     explanation["clip_id"] = clip_id
+    explanation["player_names"] = {str(k): v for k, v in names.items()}  # for the UI labels
     explanation = validate_explanation(explanation, events, cues, clip_duration)
     times = _evidence_times(events, cues)
     for claim in explanation["claims"]:

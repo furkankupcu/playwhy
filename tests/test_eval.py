@@ -1,44 +1,25 @@
-"""Tests for GSR evaluation (Hungarian matching and metrics)."""
+"""Tests for the calibration error metric."""
 
-import pytest
+import cv2
+import numpy as np
 
-from eval.gsr_eval import match_players, evaluate_frame
+from eval.calib_eval import HALF_TURN, ground_error_m
 
-
-def test_match_players_exact():
-    preds = [(10.0, 20.0), (30.0, 40.0)]
-    gt = [(10.0, 20.0), (30.0, 40.0)]
-    matches, recall = match_players(preds, gt, threshold=5.0)
-    assert len(matches) == 2
-    assert recall == 1.0
-    for _, _, dist in matches:
-        assert dist == pytest.approx(0.0)
+H_REF = cv2.getPerspectiveTransform(
+    np.float32([[0, 0], [105, 0], [105, 68], [0, 68]]),
+    np.float32([[100, 420], [760, 420], [600, 150], [250, 150]]),
+)
 
 
-def test_match_players_with_threshold():
-    # One within 2m, one 8m away
-    preds = [(10.0, 21.0), (50.0, 50.0)]
-    gt = [(10.0, 20.0), (30.0, 40.0)]
-    matches, recall = match_players(preds, gt, threshold=5.0)
-    assert len(matches) == 1
-    assert matches[0][0] == 0  # first pred
-    assert matches[0][1] == 0  # first gt
-    assert matches[0][2] == pytest.approx(1.0)
-    assert recall == 0.5
+def test_same_homography_has_zero_error():
+    assert ground_error_m(H_REF, H_REF, (848, 478)).max() < 1e-6
 
 
-def test_evaluate_frame():
-    pred = [
-        {"x_m": 12.0, "y_m": 22.0},
-        {"x_m": 50.0, "y_m": 50.0},
-    ]
-    gt = [
-        ("p1", 10.0, 20.0),
-        ("p2", 80.0, 80.0),
-    ]
-    result = evaluate_frame(pred, gt, threshold=5.0)
-    assert result["total_gt"] == 2
-    assert result["total_pred"] == 2
-    assert result["matched"] == 1
-    assert result["recall"] == 0.5
-    assert result["mean_error"] == pytest.approx((2.0**2 + 2.0**2)**0.5)
+def test_half_turn_counts_as_correct():
+    assert ground_error_m(H_REF @ HALF_TURN, H_REF, (848, 478)).max() < 1e-6
+
+
+def test_a_one_metre_shift_reads_as_one_metre():
+    shift = np.array([[1, 0, -1.0], [0, 1, 0], [0, 0, 1]])  # pitch point x maps where x-1 used to
+    e = ground_error_m(H_REF @ shift, H_REF, (848, 478))
+    assert abs(float(np.median(e)) - 1.0) < 1e-6
