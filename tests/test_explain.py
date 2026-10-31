@@ -158,3 +158,41 @@ def test_pass_facts_and_strong_cues():
     assert ev["key_moments"][0]["description"].endswith("13.4 m, backward.")
     cues = [{"visible": True, "confidence": 0.6}, {"visible": True, "confidence": 0.4}, {"visible": False, "confidence": 0.9}]
     assert strong_cues(cues) == cues[:1]
+
+
+def test_pass_facts_measure_receiver_space():
+    from goal_explainer.explain import add_pass_facts
+    ev = {"attacking_direction": "right",
+          "passes": [{"frame_idx": 5, "receiver_id": 2, "start_xy": [60, 30], "end_xy": [70, 30]}]}
+    players = [{"player_id": 2, "team": "B", "x_m": 70, "y_m": 30}, {"player_id": 9, "team": "A", "x_m": 73, "y_m": 34},
+               {"player_id": 8, "team": "A", "x_m": 60, "y_m": 30}, {"player_id": 0, "team": "ball", "x_m": 70, "y_m": 30}]
+    add_pass_facts(ev, [{"frame_idx": 5, "players": players}])
+    assert ev["passes"][0]["receiver_nearest_opponent_m"] == 5.0
+    assert ev["passes"][0]["opponents_goal_side_of_receiver"] == 1
+
+
+def test_audit_edits_words_only():
+    from goal_explainer.explain import audit_explanation
+
+    class Client:
+        def spark_json(self, prompt, schema):
+            assert "far post" in prompt
+            return {"summary": "clean", "claims": [
+                {"claim_id": 1, "text": "tapped in", "commentary": "tapped in!", "removed": ["at the far post"]},
+                {"claim_id": 99, "text": "made up", "commentary": "made up", "removed": []}]}
+
+    claims = [{"claim_id": 1, "text": "tapped in at the far post", "commentary": "far post!", "t_start": 1, "t_end": 2, "evidence": [{"id": "g"}]},
+              {"claim_id": 2, "text": "kept", "commentary": "kept", "t_start": 3, "t_end": 4, "evidence": [{"id": "h"}]}]
+    out = audit_explanation(Client(), {"summary": "x", "claims": claims}, {}, [])
+    assert out["summary"] == "clean" and out["audit_removed"] == ["at the far post"]
+    assert [c["text"] for c in out["claims"]] == ["tapped in", "kept"]  # unknown ids cannot add claims
+    assert out["claims"][0]["evidence"] == [{"id": "g"}] and out["claims"][0]["t_start"] == 1
+
+
+def test_name_ids_hides_internal_ids():
+    from goal_explainer.explain import name_ids
+    names = {2016: "blue player 9", 1004: "white player 4", 2001: "blue player 2"}
+    assert name_ids("player 2016 got clear of defender 1004, pass to 2001", names) == \
+        "blue player 9 got clear of white player 4, pass to blue player 2"
+    assert name_ids("Player 7777 in 2026", names) == "Player 7777 in 2026"
+

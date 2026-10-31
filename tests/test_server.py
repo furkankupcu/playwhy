@@ -76,3 +76,18 @@ def test_graph_video_404_until_rendered(client, tmp_path):
     assert client.get(f"/api/clips/{cid}/graphs.mp4").status_code == 404
     (Path("runs") / cid / "graphs.mp4").write_bytes(b"\x00")
     assert client.get(f"/api/clips/{cid}/graphs.mp4").status_code == 200
+
+
+def test_reference_points_measure_without_touching_analysis(client, tmp_path):
+    run = tmp_path / "runs" / "0123456789abcdef"
+    run.mkdir(parents=True)
+    _clip(run / "input.mp4", 1)
+    H = [[0.5, 0, 5], [0, 0.5, 5], [0, 0, 1]]
+    (run / "homography.json").write_text(json.dumps([{"frame_idx": 0, "H": H}]))
+    pitch = [[0, 0], [60, 0], [60, 60], [0, 60], [30, 30]]
+    points = [{"pitch": q, "px": [0.5 * q[0] + 5, 0.5 * q[1] + 5]} for q in pitch]
+    r = client.post("/api/clips/0123456789abcdef/reference", json={"points": points})
+    assert r.status_code == 200 and r.json()["median_m"] < 0.1 and r.json()["points_used"] == 5
+    assert client.started == []
+    assert json.loads((run / "homography.json").read_text())[0]["H"] == H
+

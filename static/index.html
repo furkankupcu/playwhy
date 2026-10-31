@@ -205,8 +205,10 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
         <p id="cal-empty" class="muted" style="margin:0;font-size:14px">No points yet.</p>
       </section>
       <p id="cal-msg" class="notice notice-err" role="alert" hidden></p>
+      <p id="cal-result" class="notice notice-warn" role="status" hidden></p>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button id="cal-submit" class="btn btn-primary" style="flex:1" disabled>Use these points</button>
+        <button id="cal-measure" class="btn" disabled>Measure accuracy only</button>
         <a id="cal-cancel" class="btn" href="#/">Cancel</a>
       </div>
     </div>
@@ -232,6 +234,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
           <button id="t-ball" class="toggle" aria-pressed="true">Ball path</button>
           <button id="t-marks" class="toggle" aria-pressed="true">Marking</button>
           <button id="t-shape" class="toggle" aria-pressed="false">Team shape</button>
+          <button id="t-heat" class="toggle" aria-pressed="false">Heatmap</button>
         </div>
       </div>
       <div class="pitch-wrap">
@@ -247,7 +250,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
           <circle cx="11" cy="34" r=".35" fill="#6E9C80"/><circle cx="94" cy="34" r=".35" fill="#6E9C80"/>
           <line x1="-.6" y1="30.34" x2="-.6" y2="37.66" stroke="#E8EDEA" stroke-width="1"/>
           <line x1="105.6" y1="30.34" x2="105.6" y2="37.66" stroke="#E8EDEA" stroke-width="1"/>
-          <g id="layer-offside"></g><g id="layer-graph"></g><g id="layer-ball"></g><g id="layer-players"></g>
+          <g id="layer-heat"></g><g id="layer-offside"></g><g id="layer-graph"></g><g id="layer-ball"></g><g id="layer-players"></g><g id="layer-measure"></g>
         </svg>
         <div class="legend">
           <span><i id="lg-a-dot" style="background:var(--team-a)"></i><span id="lg-a">Team A</span></span>
@@ -259,6 +262,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
           <span><i class="state-key" style="border-color:#fab219;border-top-style:dashed"></i>loose 2–5 m</span>
           <span><i class="state-key" style="border-color:#d03b3b;border-top-style:dotted"></i>free &gt; 5 m</span>
         </div>
+        <p id="measure-hint" class="muted" style="margin:0;font-size:13px;text-align:center">Click two players to measure the distance between them.</p>
         <p id="pitch-gap" class="muted" style="margin:0;font-size:13px;text-align:center" hidden>No reliable pitch mapping for this frame.</p>
       </div>
     </div>
@@ -274,6 +278,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
         <h2>Why this goal happened</h2>
         <div style="display:flex;gap:6px">
+          <button id="cast" class="btn" aria-pressed="false">Play commentary</button>
           <button id="prev" class="btn icon-btn" aria-label="Previous claim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
           <button id="next" class="btn icon-btn" aria-label="Next claim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
@@ -285,6 +290,10 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       <div class="panel">
         <span class="label">Move in numbers</span>
         <div id="stats" class="stats"></div>
+      </div>
+      <div class="panel">
+        <span class="label">Distance covered in this clip</span>
+        <div id="runners" style="display:flex;flex-direction:column;gap:4px;font-size:14px"></div>
       </div>
       <div class="panel">
         <span class="label">How to read this</span>
@@ -421,6 +430,8 @@ async function openCalibrate(id) {
   if (!keypoints) keypoints = await api("/api/pitch/keypoints");
   $("cal-img").src = `/api/clips/${id}/frame0.jpg`;
   $("cal-submit").onclick = () => submitCalibration(id);
+  $("cal-measure").onclick = () => measureAccuracy(id);
+  $("cal-result").hidden = true;
   renderCal();
 }
 $("cal-img").addEventListener("click", (e) => {
@@ -447,7 +458,7 @@ function renderCal() {
   }));
   const named = calPoints.filter((p) => p.kp);
   const unique = new Set(named.map((p) => p.kp)).size === named.length;
-  $("cal-submit").disabled = !(named.length >= 4 && named.length === calPoints.length && unique);
+  $("cal-submit").disabled = $("cal-measure").disabled = !(named.length >= 4 && named.length === calPoints.length && unique);
 }
 async function submitCalibration(id) {
   const points = calPoints.map((p) => ({ px: p.px, pitch: keypoints[p.kp] }));
@@ -457,15 +468,25 @@ async function submitCalibration(id) {
   } catch (err) { $("cal-msg").textContent = err.message; $("cal-msg").hidden = false; }
 }
 
+async function measureAccuracy(id) {
+  const points = calPoints.map((p) => ({ px: p.px, pitch: keypoints[p.kp] }));
+  $("cal-msg").hidden = true;
+  try {
+    const r = await api(`/api/clips/${id}/reference`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points }) });
+    $("cal-result").textContent = `Automatic fit vs your points: ${r.median_m} m median, ${r.p90_m} m at p90 (${r.points_used} of ${r.points_given} points agree).`;
+    $("cal-result").hidden = false;
+  } catch (err) { $("cal-msg").textContent = err.message; $("cal-msg").hidden = false; }
+}
+
 // ---------------------------------------------------------------- result
-const R = { data: null, frames: [], sel: 0, showOffside: true, showBall: true, showMarks: true, showShape: false };
+const R = { data: null, frames: [], sel: 0, showOffside: true, showBall: true, showMarks: true, showShape: false, heat: "", measure: [] };
 
 async function openResult(id) {
   let d;
   try { d = await api(`/api/clips/${id}/result`); }
   catch (err) { show("progress"); $("progress-msg").textContent = err.message; $("progress-msg").hidden = false; return; }
   show("result");
-  R.data = d; R.sel = 0;
+  R.data = d; R.sel = 0; R.measure = []; R.heat = ""; stopCommentary();
   const claims = d.explanation.claims || [];
 
   // frame index → players (carry the last known frame forward over gaps)
@@ -502,6 +523,8 @@ async function openResult(id) {
   const v = $("video");
   v.src = `/api/clips/${id}/video`;
   renderStats();
+  renderRunners();
+  drawHeat();
   renderClaims();
   renderTimeline();
   renderCues();
@@ -592,6 +615,100 @@ function renderStats() {
   $("stats").replaceChildren(...items.map(([b, s]) => el("div", {}, el("b", { text: b }), el("span", { text: s }))));
 }
 
+// Sampled every half second: at frame rate, tracking jitter adds up to metres nobody ran.
+function distances() {
+  const d = R.data, step = Math.max(1, Math.round(d.fps / 2)), keepers = new Set((d.graphs && d.graphs.keepers) || []);
+  const last = new Map(), total = new Map();
+  for (const f of d.pitch) {
+    if (f.frame_idx % step) continue;
+    for (const p of f.players) {
+      if ((p.team !== "A" && p.team !== "B") || keepers.has(p.player_id)) continue;
+      const q = last.get(p.player_id);
+      if (q) total.set(p.player_id, (total.get(p.player_id) || 0) + Math.hypot(p.x_m - q.x_m, p.y_m - q.y_m));
+      last.set(p.player_id, p);
+    }
+  }
+  return [...total].sort((a, b) => b[1] - a[1]);
+}
+function renderRunners() {
+  $("runners").replaceChildren(...distances().slice(0, 5).map(([id, m]) => el("div", { style: "display:flex;justify-content:space-between;gap:10px" },
+    el("span", { text: nameOf(id) }), el("span", { class: "mono", text: `${Math.round(m)} m` }))));
+}
+
+// Where a team spent the clip, in 5 m cells. The button cycles: off, team A, team B.
+const nameTeam = (t) => (R.data.shirts && R.data.shirts[t]) || `team ${t}`;
+function drawHeat() {
+  const layer = $("layer-heat"), d = R.data; layer.replaceChildren();
+  const keepers = new Set((d.graphs && d.graphs.keepers) || []);
+  $("t-heat").textContent = R.heat ? `Heatmap: ${nameTeam(R.heat)}` : "Heatmap";
+  $("t-heat").setAttribute("aria-pressed", String(!!R.heat));
+  if (!R.heat) return;
+  const cells = new Map();
+  for (const f of d.pitch) for (const p of f.players) {
+    if (p.team !== R.heat || keepers.has(p.player_id)) continue;
+    const k = `${Math.floor(p.x_m / 5)},${Math.floor(p.y_m / 5)}`;
+    cells.set(k, (cells.get(k) || 0) + 1);
+  }
+  const top = Math.max(1, ...cells.values());
+  for (const [k, n] of cells) {
+    const [cx, cy] = k.split(",").map(Number);
+    layer.append(svg("rect", { x: cx * 5, y: PY((cy + 1) * 5), width: 5, height: 5, fill: "#FF8A3D", "fill-opacity": (0.75 * n / top).toFixed(2) }));
+  }
+}
+
+// Measure between two clicked players; the line follows them as the video plays.
+function drawMeasure(players) {
+  const layer = $("layer-measure"); layer.replaceChildren();
+  const pos = (id) => (players || []).find((p) => p.player_id === id);
+  const [a, b] = R.measure.map(pos);
+  if (a) layer.append(svg("circle", { cx: a.x_m, cy: PY(a.y_m), r: "2", fill: "none", stroke: "#FFFFFF", "stroke-width": ".4" }));
+  if (a && b) {
+    const m = Math.hypot(a.x_m - b.x_m, a.y_m - b.y_m);
+    layer.append(svg("line", { x1: a.x_m, y1: PY(a.y_m), x2: b.x_m, y2: PY(b.y_m), stroke: "#FFFFFF", "stroke-width": ".4" }));
+    const tx = svg("text", { x: (a.x_m + b.x_m) / 2, y: PY((a.y_m + b.y_m) / 2) - 1, fill: "#FFFFFF", "font-size": "2.8", "font-weight": "700", "text-anchor": "middle", "paint-order": "stroke", stroke: "#0F1412", "stroke-width": ".6" });
+    tx.textContent = `${m.toFixed(1)} m`;
+    layer.append(tx);
+  }
+  if (R.measure.length === 2) $("measure-hint").textContent = `${nameOf(R.measure[0])} to ${nameOf(R.measure[1])}. Click another player to start again.`;
+  else $("measure-hint").textContent = R.measure.length ? `${nameOf(R.measure[0])} selected. Click a second player.` : "Click two players to measure the distance between them.";
+}
+
+// Commentary: the video stops at each claim while the browser voice reads Muse Spark's line.
+let cast = null;
+function stopCommentary() {
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (cast) clearTimeout(cast.timer);
+  cast = null;
+  $("cast").textContent = "Play commentary"; $("cast").setAttribute("aria-pressed", "false");
+}
+function startCommentary() {
+  const claims = R.data.explanation.claims || [];
+  if (!claims.length) return;
+  cast = { i: 0, speaking: false, timer: 0 };
+  $("cast").textContent = "Stop commentary"; $("cast").setAttribute("aria-pressed", "true");
+  const v = $("video");
+  v.currentTime = Math.max(0, claims[0].t_start - 2);
+  v.play();
+}
+function stepCommentary() {
+  const v = $("video"), claims = R.data ? R.data.explanation.claims || [] : [];
+  if (!cast || cast.speaking || cast.i >= claims.length || v.currentTime < claims[cast.i].t_start) return;
+  const line = claims[cast.i].commentary || claims[cast.i].text, run = cast;
+  run.speaking = true; v.pause(); selectClaim(cast.i, false);
+  const next = () => {
+    if (cast !== run || !run.speaking) return;
+    clearTimeout(run.timer); run.speaking = false; run.i++; v.play();
+  };
+  const u = new SpeechSynthesisUtterance(line);
+  u.lang = "en-GB"; u.onend = next; u.onerror = next;
+  // shortcut: a browser with no voice fires no event, so a timer moves on; upgrade with a real TTS model
+  run.timer = setTimeout(next, 2000 + line.split(/\s+/).length * 600);
+  speechSynthesis.speak(u);
+}
+$("cast").hidden = !window.speechSynthesis;
+$("cast").addEventListener("click", () => cast ? stopCommentary() : startCommentary());
+$("video").addEventListener("ended", stopCommentary);
+
 // Dots wear the teams' real kit colours (read by Muse Spark); unknown or clashing kits fall back to blue/orange.
 const KIT = { white: "#F0EFEC", black: "#1A1A19", blue: "#3B82F6", "light blue": "#7DD3FC", "sky blue": "#7DD3FC",
   navy: "#1E3A8A", red: "#E5484D", yellow: "#F5C518", green: "#2FA84F", orange: "#FF8A3D", purple: "#8B5CF6", grey: "#9AA8A1", gray: "#9AA8A1" };
@@ -652,7 +769,8 @@ function drawPitch() {
     if (p.team === "ball") { layer.append(svg("circle", { cx: p.x_m, cy, r: ".6", fill: "#FFFFFF", stroke: "#0F1412", "stroke-width": ".2" })); continue; }
     const fill = p.team === "A" || p.team === "B" ? teamFill(p.team) : "#9AA8A1";
     const isKey = key.has(Number(p.player_id));
-    const g = svg("g");
+    const g = svg("g", { style: "cursor:pointer" });
+    g.addEventListener("pointerdown", () => { R.measure = R.measure.length === 1 && R.measure[0] !== p.player_id ? [R.measure[0], p.player_id] : [p.player_id]; drawPitch(); });
     const title = svg("title"); title.textContent = nameOf(p.player_id); g.append(title);
     if (isKey) g.append(svg("circle", { cx: p.x_m, cy, r: "1.9", fill: "none", stroke: "#F2B33D", "stroke-width": ".45" }));
     g.append(svg("circle", { cx: p.x_m, cy, r: "1.2", fill, stroke: fill === "#1A1A19" ? "#9AA8A1" : "#0F1412", "stroke-width": ".25" }));
@@ -664,6 +782,7 @@ function drawPitch() {
     }
     layer.append(g);
   }
+  drawMeasure(players);
 }
 
 // Marking + team shape, on the pitch and projected onto the video with the frame's homography.
@@ -725,7 +844,8 @@ let raf = 0;
 const loop = () => { drawPitch(); raf = $("video").paused ? 0 : requestAnimationFrame(loop); };
 $("video").addEventListener("play", () => { if (!raf) raf = requestAnimationFrame(loop); });
 $("video").addEventListener("seeked", drawPitch);
-$("video").addEventListener("timeupdate", () => { if (!raf) drawPitch(); });
+$("video").addEventListener("timeupdate", () => { if (!raf) drawPitch(); stepCommentary(); });
+$("t-heat").addEventListener("click", () => { R.heat = { "": "A", A: "B", B: "" }[R.heat]; drawHeat(); });
 for (const [btnId, keyName] of [["t-offside", "showOffside"], ["t-ball", "showBall"], ["t-marks", "showMarks"], ["t-shape", "showShape"]]) {
   $(btnId).addEventListener("click", (e) => { R[keyName] = !R[keyName]; e.currentTarget.setAttribute("aria-pressed", String(R[keyName])); drawPitch(); });
 }

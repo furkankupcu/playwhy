@@ -20,10 +20,12 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from eval.calib_eval import ground_error_m
 from goal_explainer.pipeline import STEPS, run_pipeline
 from goal_explainer.pitch import PITCH_KEYPOINTS
 from goal_explainer.track import video_info
@@ -141,6 +143,30 @@ def calibrate_clip(clip_id: str, body: CalibrationRequest) -> dict[str, Any]:
     if not _start(clip_id, [p.model_dump() for p in body.points], skip_to=2):
         raise HTTPException(409, "Analysis is already running for this clip.")
     return {"clip_id": clip_id}
+
+
+@app.post("/api/clips/{clip_id}/reference")
+def calibration_reference(clip_id: str, body: CalibrationRequest) -> dict[str, Any]:
+    """Compare the automatic fit of frame 0 with hand-marked points; changes no analysis result."""
+    run_dir = _run_dir(clip_id)
+    homographies = _read_json(run_dir / "homography.json")
+    if not homographies:
+        raise HTTPException(409, "Calibration has not finished yet.")
+    points = [p.model_dump() for p in body.points]
+    H_ref, mask = cv2.findHomography(np.array([p["pitch"] for p in points], np.float64),
+                                     np.array([p["px"] for p in points], np.float64), cv2.RANSAC, 10.0)
+    if H_ref is None:
+        raise HTTPException(422, "These points do not define a camera. Spread them out and avoid straight lines.")
+    cap = cv2.VideoCapture(str(run_dir / "input.mp4"))
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    cap.release()
+    errors = ground_error_m(np.array(homographies[0]["H"], np.float64), H_ref, size)
+    if not len(errors):
+        raise HTTPException(422, "These points map no visible pixel onto the pitch. Check their names.")
+    result = {"median_m": round(float(np.median(errors)), 2), "p90_m": round(float(np.percentile(errors, 90)), 2),
+              "points_used": int(mask.sum()), "points_given": len(points)}
+    (run_dir / "calib_reference.json").write_text(json.dumps({**result, "points": points}, indent=2), encoding="utf-8")
+    return result
 
 
 @app.get("/api/clips/{clip_id}/result")

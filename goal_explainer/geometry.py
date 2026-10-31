@@ -975,7 +975,8 @@ def run(clip_id: str) -> Path:
     # Attacking team = the team that had the ball most
     from collections import Counter
     teams = Counter(ev.team for ev in possession).most_common(1)
-    attackers = {p.player_id for p in player_positions if teams and p.team == teams[0][0]}
+    keepers = {o["object_id"] for f in tracks["frames"] for o in f["objects"] if o.get("cls") == "goalkeeper"}
+    attackers = {p.player_id for p in player_positions if teams and p.team == teams[0][0]} - keepers
     key_moments = collect_key_moments(passes, shots, lost_man, attackers or None)
 
     # ---- Serialize --------------------------------------------------------

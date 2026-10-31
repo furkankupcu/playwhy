@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -59,6 +60,7 @@ _EXPLANATION_SCHEMA: dict[str, Any] = {
             "properties": {
                 "claim_id": {"type": "integer"},
                 "text": {"type": "string"},
+                "commentary": {"type": "string"},
                 "t_start": {"type": "number"},
                 "t_end": {"type": "number"},
                 "player_ids": {"type": "array", "items": {"type": "integer"}},
@@ -73,7 +75,7 @@ _EXPLANATION_SCHEMA: dict[str, Any] = {
                     "additionalProperties": False,
                 }},
             },
-            "required": ["claim_id", "text", "t_start", "t_end", "player_ids", "evidence"],
+            "required": ["claim_id", "text", "commentary", "t_start", "t_end", "player_ids", "evidence"],
             "additionalProperties": False,
         }},
     },
@@ -180,10 +182,76 @@ def build_explanation_prompt(
         "- Each claim should reference specific players by their IDs.\n"
         "- State pass length and direction only as given (length_m, direction); never call a "
         "pass long, a switch or a diagonal unless those numbers say so.\n"
+        "- Write text like a match analyst: flowing sentences that say why each fact mattered. "
+        "Do not copy field names or the raw wording of cues and descriptions.\n"
+        "- commentary is what a broadcast commentator says aloud over this moment: one lively "
+        "sentence, at most 25 words, same facts as text, no numbers with decimals.\n"
         "- Do not describe speed (sprint, burst), intent or anything the data does not state.\n"
         "- The goal moment's player_ids are the players nearest the goal, not the scorer. "
         "Name a scorer only if a shot event gives a shooter_id."
     )
+
+
+# ---------------------------------------------------------------------------
+# Audit: a second Muse Spark pass strikes what the data does not support
+# ---------------------------------------------------------------------------
+
+_AUDIT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "claims": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "claim_id": {"type": "integer"},
+                "text": {"type": "string"},
+                "commentary": {"type": "string"},
+                "removed": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["claim_id", "text", "commentary", "removed"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["summary", "claims"],
+    "additionalProperties": False,
+}
+
+
+def name_ids(text: str, names: dict[int, str]) -> str:
+    """Replace internal ids ("player 2016", "defender 1004", "to 2001") with readable names."""
+    def swap(m: re.Match[str]) -> str:
+        return names.get(int(m.group(1)), m.group(0))
+    return re.sub(r"\b(?:[Pp]layer |[Dd]efender )?(\d{4})\b", swap, text)
+
+
+def audit_explanation(client: Any, explanation: dict[str, Any], events: dict[str, Any],
+                      cues: list[dict[str, Any]]) -> dict[str, Any]:
+    """Rewrite each claim so that it states only what the data supports.
+
+    The validator can check ids and times but not prose; flowing text is where details
+    like "far post" creep in. Claims keep their ids, times and evidence; the model only edits words.
+    """
+    draft = {"summary": explanation.get("summary", ""),
+             "claims": [{k: c.get(k) for k in ("claim_id", "text", "commentary")} for c in explanation["claims"]]}
+    data = {k: events.get(k, []) for k in ("attacking_direction", "passes", "shots", "goals", "key_moments")}
+    audited = client.spark_json(
+        "You are checking a football explanation against its data. Keep it fluent, but strike or rewrite "
+        "every statement the data does not support: pitch locations (far post, near post, in behind), "
+        "effects on opponents (pulled, drew, stretched, isolated, caught), what players could or could not "
+        "do, and causes stated as fact. Facing, gaze and reaction are in the cues; lengths, direction and "
+        "receiver space are in the passes; goal details are in the goal's description. Do not add facts. "
+        "List each phrase you struck in removed.\n\n"
+        f"=== DATA ===\n{json.dumps(data, ensure_ascii=False)}\n\n"
+        f"=== CUES ===\n{json.dumps(cues, ensure_ascii=False)}\n\n"
+        f"=== DRAFT ===\n{json.dumps(draft, ensure_ascii=False)}",
+        _AUDIT_SCHEMA,
+    )
+    by_id = {c["claim_id"]: c for c in audited.get("claims", [])}
+    out = dict(explanation, summary=audited.get("summary") or explanation.get("summary", ""))
+    out["claims"] = [{**c, **{k: by_id[c["claim_id"]][k] for k in ("text", "commentary")}} if c["claim_id"] in by_id else c
+                     for c in explanation["claims"]]
+    out["audit_removed"] = [r for c in audited.get("claims", []) for r in c.get("removed", [])]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +283,10 @@ def strong_cues(cues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [c for c in cues if c.get("visible") and c.get("confidence", 0) >= _MIN_CUE_CONFIDENCE]
 
 
-def add_pass_facts(events: dict[str, Any]) -> None:
+def add_pass_facts(events: dict[str, Any], pitch: list[dict[str, Any]] | None = None) -> None:
     """Give every pass (and its key moment) a length and a direction relative to the attack,
-    so the model has no reason to guess what kind of pass it was."""
+    plus the receiver's space, so the model has no reason to guess what kind of pass it was."""
+    players_at = {f["frame_idx"]: f["players"] for f in pitch or []}
     sign = -1.0 if events.get("attacking_direction") == "left" else 1.0
     facts: dict[int, str] = {}
     for p in events.get("passes", []):
@@ -227,6 +296,13 @@ def add_pass_facts(events: dict[str, Any]) -> None:
         p["length_m"] = round(length, 1)
         p["direction"] = "forward" if along > 0.5 * length else "backward" if along < -0.5 * length else "square"
         facts[p["frame_idx"]] = f" {p['length_m']} m, {p['direction']}."
+        players = players_at.get(p["frame_idx"], [])
+        rx = next((q for q in players if q["player_id"] == p["receiver_id"]), None)
+        rivals = [q for q in players if rx and q["team"] in ("A", "B") and q["team"] != rx["team"]]
+        if rivals:
+            p["receiver_nearest_opponent_m"] = round(min(
+                ((q["x_m"] - rx["x_m"]) ** 2 + (q["y_m"] - rx["y_m"]) ** 2) ** 0.5 for q in rivals), 1)
+            p["opponents_goal_side_of_receiver"] = sum(sign * (q["x_m"] - rx["x_m"]) > 0 for q in rivals)
     for m in events.get("key_moments", []):
         if m.get("event_type") == "pass" and m.get("frame_idx") in facts and "m," not in m.get("description", ""):
             m["description"] = m.get("description", "") + facts[m["frame_idx"]]
@@ -379,17 +455,23 @@ def run(video_path: Path, clip_id: str) -> Path:
     tracks = json.loads((run_dir / "tracks.json").read_text(encoding="utf-8"))
     names = player_names(tracks, cues)  # shirt numbers from every read, evidence only from strong ones
     cues = strong_cues(cues)
-    add_pass_facts(events)
+    add_pass_facts(events, json.loads((run_dir / "pitch.json").read_text(encoding="utf-8")))
     prompt = build_explanation_prompt(events, cues, names)
 
-    explanation = get_client(clip_id).spark_json(prompt, _EXPLANATION_SCHEMA)
+    client = get_client(clip_id)
+    explanation = client.spark_json(prompt, _EXPLANATION_SCHEMA)
     explanation["clip_id"] = clip_id
     explanation["player_names"] = {str(k): v for k, v in names.items()}  # for the UI labels
     explanation = validate_explanation(explanation, events, cues, clip_duration)
+    explanation = audit_explanation(client, explanation, events, cues)
     times = _evidence_times(events, cues)
+    explanation["summary"] = name_ids(explanation.get("summary", ""), names)
     for claim in explanation["claims"]:
+        claim["text"] = name_ids(claim["text"], names)
+        claim["commentary"] = name_ids(claim["commentary"], names)
         for ev in claim["evidence"]:
             ev["t"] = times.get(str(ev["id"]))  # lets the UI jump to the evidence
+            ev["description"] = name_ids(ev.get("description", ""), names)
 
     logger.info(
         "Explanation has %d valid claims after validation",
