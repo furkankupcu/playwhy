@@ -49,6 +49,7 @@ Everything is cached on disk per request, so re-running a step costs nothing.
 
 | Clip | Reference | Median error |
 |---|---|---|
+| Phone video from the stands, 4K, first frame only | 30 hand-marked points (21 agree within 15 px) | **1.45 m** (p90 2.3 m) |
 | Phone video from the stands, 4K, most of the pitch visible, 652 frames | earlier fit, verified by eye | **1.9 m** (0.9–2 m for most of the clip; up to 5.7 m in the last seconds, where the camera pans fast) |
 | SoccerTrack v2 goal, distorted panorama cropped to the box (one corner of the pitch visible), 600 frames | dataset's hand-placed keypoints | **11.9 m**, steady across the clip (11.3–12.8 m) |
 

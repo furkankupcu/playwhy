@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from eval.calib_eval import ground_error_m
+from goal_explainer.calibrate import _keeps_orientation
 from goal_explainer.explain import answer_question
 from goal_explainer.pipeline import STEPS, run_pipeline
 from goal_explainer.pitch import PITCH_KEYPOINTS
@@ -133,7 +134,28 @@ class Point(BaseModel):
 
 
 class CalibrationRequest(BaseModel):
-    points: list[Point] = Field(min_length=4, max_length=12)
+    points: list[Point] = Field(min_length=4, max_length=len(PITCH_KEYPOINTS))
+
+
+def _fit_points(points: list[dict[str, Any]], width: float) -> tuple[Any, Any, list[dict[str, Any]], bool]:
+    """Homography from hand points. Left/right is easy to read backwards from behind a goal, and
+    the pitch is mirror-symmetric, so mirrored labels are flipped rather than refused."""
+    px = np.array([p["px"] for p in points], np.float64)
+    pitch = np.array([p["pitch"] for p in points], np.float64)
+    tolerance = max(5.0, width * 0.004)  # a hand click on a scaled-down 4K frame is ~10 px off
+    H, mask = cv2.findHomography(pitch, px, cv2.RANSAC, tolerance)
+    if H is None or _keeps_orientation(H, tuple(pitch.mean(axis=0))):
+        return H, mask, points, False
+    flipped = [{"px": p["px"], "pitch": [p["pitch"][0], 68.0 - p["pitch"][1]]} for p in points]
+    H, mask = cv2.findHomography(pitch * [1, -1] + [0, 68], px, cv2.RANSAC, tolerance)
+    return H, mask, flipped, True
+
+
+def _frame_size(run_dir: Path) -> tuple[int, int]:
+    cap = cv2.VideoCapture(str(run_dir / "input.mp4"))
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    cap.release()
+    return size
 
 
 @app.post("/api/clips/{clip_id}/calibrate")
@@ -141,7 +163,8 @@ def calibrate_clip(clip_id: str, body: CalibrationRequest) -> dict[str, Any]:
     run_dir = _run_dir(clip_id)
     if not (run_dir / "tracks.json").is_file():
         raise HTTPException(409, "Tracking has not finished yet.")
-    if not _start(clip_id, [p.model_dump() for p in body.points], skip_to=2):
+    _, _, points, _ = _fit_points([p.model_dump() for p in body.points], _frame_size(run_dir)[0])
+    if not _start(clip_id, points, skip_to=2):
         raise HTTPException(409, "Analysis is already running for this clip.")
     return {"clip_id": clip_id}
 
@@ -153,19 +176,15 @@ def calibration_reference(clip_id: str, body: CalibrationRequest) -> dict[str, A
     homographies = _read_json(run_dir / "homography.json")
     if not homographies:
         raise HTTPException(409, "Calibration has not finished yet.")
-    points = [p.model_dump() for p in body.points]
-    H_ref, mask = cv2.findHomography(np.array([p["pitch"] for p in points], np.float64),
-                                     np.array([p["px"] for p in points], np.float64), cv2.RANSAC, 10.0)
+    size = _frame_size(run_dir)
+    H_ref, mask, points, mirrored = _fit_points([p.model_dump() for p in body.points], size[0])
     if H_ref is None:
         raise HTTPException(422, "These points do not define a camera. Spread them out and avoid straight lines.")
-    cap = cv2.VideoCapture(str(run_dir / "input.mp4"))
-    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    cap.release()
     errors = ground_error_m(np.array(homographies[0]["H"], np.float64), H_ref, size)
     if not len(errors):
         raise HTTPException(422, "These points map no visible pixel onto the pitch. Check their names.")
     result = {"median_m": round(float(np.median(errors)), 2), "p90_m": round(float(np.percentile(errors, 90)), 2),
-              "points_used": int(mask.sum()), "points_given": len(points)}
+              "points_used": int(mask.sum()), "points_given": len(points), "mirrored": mirrored}
     (run_dir / "calib_reference.json").write_text(json.dumps({**result, "points": points}, indent=2), encoding="utf-8")
     return result
 

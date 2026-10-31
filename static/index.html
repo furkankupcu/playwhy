@@ -537,7 +537,7 @@ async function measureAccuracy(id) {
   $("cal-msg").hidden = true;
   try {
     const r = await api(`/api/clips/${id}/reference`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points }) });
-    $("cal-result").textContent = `Automatic fit vs your points: ${r.median_m} m median, ${r.p90_m} m at p90 (${r.points_used} of ${r.points_given} points agree).`;
+    $("cal-result").textContent = `Automatic fit vs your points: ${r.median_m} m median, ${r.p90_m} m at p90 (${r.points_used} of ${r.points_given} points agree)${r.mirrored ? ". Left and right were read backwards, so they were flipped" : ""}.`;
     $("cal-result").hidden = false;
   } catch (err) { $("cal-msg").textContent = err.message; $("cal-msg").hidden = false; }
 }

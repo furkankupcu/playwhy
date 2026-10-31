@@ -82,12 +82,16 @@ def test_reference_points_measure_without_touching_analysis(client, tmp_path):
     run = tmp_path / "runs" / "0123456789abcdef"
     run.mkdir(parents=True)
     _clip(run / "input.mp4", 1)
-    H = [[0.5, 0, 5], [0, 0.5, 5], [0, 0, 1]]
+    H = [[0.5, 0, 5], [0, -0.5, 40], [0, 0, 1]]  # seen from above: not mirrored
     (run / "homography.json").write_text(json.dumps([{"frame_idx": 0, "H": H}]))
     pitch = [[0, 0], [60, 0], [60, 60], [0, 60], [30, 30]]
-    points = [{"pitch": q, "px": [0.5 * q[0] + 5, 0.5 * q[1] + 5]} for q in pitch]
+    points = [{"pitch": q, "px": [0.5 * q[0] + 5, 40 - 0.5 * q[1]]} for q in pitch]
     r = client.post("/api/clips/0123456789abcdef/reference", json={"points": points})
     assert r.status_code == 200 and r.json()["median_m"] < 0.1 and r.json()["points_used"] == 5
+    assert r.json()["mirrored"] is False
+    backwards = [{"pitch": [q[0], 68 - q[1]], "px": [0.5 * q[0] + 5, 40 - 0.5 * q[1]]} for q in pitch]
+    r = client.post("/api/clips/0123456789abcdef/reference", json={"points": backwards})
+    assert r.json()["mirrored"] is True and r.json()["median_m"] < 0.1
     assert client.started == []
     assert json.loads((run / "homography.json").read_text())[0]["H"] == H
 
