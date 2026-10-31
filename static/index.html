@@ -230,11 +230,11 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       <div class="panel-head">
         <span class="label">Top-down replay</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button id="t-offside" class="toggle" aria-pressed="true">Offside line</button>
-          <button id="t-ball" class="toggle" aria-pressed="true">Ball path</button>
+          <button id="t-players" class="toggle" aria-pressed="false">Players</button>
           <button id="t-marks" class="toggle" aria-pressed="true">Marking</button>
           <button id="t-shape" class="toggle" aria-pressed="false">Team shape</button>
           <button id="t-heat" class="toggle" aria-pressed="false">Heatmap</button>
+          <button id="t-offside" class="toggle" aria-pressed="false">Offside line</button>
         </div>
       </div>
       <div class="pitch-wrap">
@@ -285,6 +285,18 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       </div>
       <p id="summary" style="margin:0;color:var(--text-2);max-width:70ch"></p>
       <div id="claims" style="display:flex;flex-direction:column;gap:10px"></div>
+      <section class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px" aria-label="Ask about this goal">
+        <span class="label">Ask about this goal</span>
+        <form id="ask-form" style="display:flex;gap:8px">
+          <input id="ask-input" maxlength="300" aria-label="Your question" placeholder="Who was marking blue #38 before the goal?" style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--line-2);background:transparent;color:inherit;font:inherit">
+          <button id="ask-send" class="btn btn-primary" type="submit">Ask</button>
+        </form>
+        <div id="ask-answer" role="status" style="display:flex;flex-direction:column;gap:8px" hidden></div>
+      </section>
+      <details id="struck" class="panel" style="padding:14px" hidden>
+        <summary style="cursor:pointer"><span id="struck-count"></span>: the first draft said this, the data did not support it</summary>
+        <ul id="struck-list" class="muted" style="margin:10px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:14px"></ul>
+      </details>
     </div>
     <aside class="side">
       <div class="panel">
@@ -479,7 +491,7 @@ async function measureAccuracy(id) {
 }
 
 // ---------------------------------------------------------------- result
-const R = { data: null, frames: [], sel: 0, showOffside: true, showBall: true, showMarks: true, showShape: false, heat: "", measure: [] };
+const R = { data: null, frames: [], sel: 0, showOffside: false, showBall: false, showMarks: true, showShape: false, heat: "", measure: [] };
 
 async function openResult(id) {
   let d;
@@ -487,6 +499,7 @@ async function openResult(id) {
   catch (err) { show("progress"); $("progress-msg").textContent = err.message; $("progress-msg").hidden = false; return; }
   show("result");
   R.data = d; R.sel = 0; R.measure = []; R.heat = ""; stopCommentary();
+  setLayer("marks");
   const claims = d.explanation.claims || [];
 
   // frame index → players (carry the last known frame forward over gaps)
@@ -524,7 +537,8 @@ async function openResult(id) {
   v.src = `/api/clips/${id}/video`;
   renderStats();
   renderRunners();
-  drawHeat();
+  renderStruck();
+  $("ask-answer").hidden = true;
   renderClaims();
   renderTimeline();
   renderCues();
@@ -635,7 +649,37 @@ function renderRunners() {
     el("span", { text: nameOf(id) }), el("span", { class: "mono", text: `${Math.round(m)} m` }))));
 }
 
-// Where a team spent the clip, in 5 m cells. The button cycles: off, team A, team B.
+// One layer at a time: stacked on one pitch they hide each other. Heatmap again switches team.
+function setLayer(layer) {
+  R.showBall = layer === "players"; R.showMarks = layer === "marks"; R.showShape = layer === "shape"; R.showOffside = layer === "offside";
+  R.heat = layer === "heat" ? (R.heat === "A" ? "B" : "A") : "";
+  for (const [id, l] of [["t-players", "players"], ["t-marks", "marks"], ["t-shape", "shape"], ["t-offside", "offside"]]) $(id).setAttribute("aria-pressed", String(l === layer));
+  drawHeat(); drawPitch();
+}
+
+function renderStruck() {
+  const struck = R.data.explanation.audit_removed || [];
+  $("struck").hidden = !struck.length;
+  $("struck-count").textContent = `${struck.length} phrase${struck.length === 1 ? "" : "s"} removed by the audit`;
+  $("struck-list").replaceChildren(...struck.map((t) => el("li", {}, el("s", { text: t }))));
+}
+
+async function askClip(e) {
+  e.preventDefault();
+  const question = $("ask-input").value.trim(), box = $("ask-answer");
+  if (question.length < 3) return;
+  $("ask-send").disabled = true;
+  box.hidden = false; box.replaceChildren(el("span", { class: "muted", text: "Muse Spark is checking the data…" }));
+  try {
+    const r = await api(`/api/clips/${R.data.clip_id}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+    box.replaceChildren(el("p", { style: "margin:0", text: r.answer }), el("div", { class: "evidence" }, ...r.evidence.map((ev) =>
+      el("button", { class: "ev", title: ev.t != null ? `Jump to ${fmt(ev.t)}` : "", onclick: () => { if (ev.t != null) seek(ev.t); } },
+        el("b", { text: `${evLabel(ev)}: ` }), ev.description))));
+  } catch (err) { box.replaceChildren(el("span", { class: "notice notice-err", text: err.message })); }
+  $("ask-send").disabled = false;
+}
+
+// Where a team spent the clip, in 5 m cells.
 const nameTeam = (t) => (R.data.shirts && R.data.shirts[t]) || `team ${t}`;
 function drawHeat() {
   const layer = $("layer-heat"), d = R.data; layer.replaceChildren();
@@ -845,10 +889,10 @@ const loop = () => { drawPitch(); raf = $("video").paused ? 0 : requestAnimation
 $("video").addEventListener("play", () => { if (!raf) raf = requestAnimationFrame(loop); });
 $("video").addEventListener("seeked", drawPitch);
 $("video").addEventListener("timeupdate", () => { if (!raf) drawPitch(); stepCommentary(); });
-$("t-heat").addEventListener("click", () => { R.heat = { "": "A", A: "B", B: "" }[R.heat]; drawHeat(); });
-for (const [btnId, keyName] of [["t-offside", "showOffside"], ["t-ball", "showBall"], ["t-marks", "showMarks"], ["t-shape", "showShape"]]) {
-  $(btnId).addEventListener("click", (e) => { R[keyName] = !R[keyName]; e.currentTarget.setAttribute("aria-pressed", String(R[keyName])); drawPitch(); });
+for (const [btnId, layer] of [["t-players", "players"], ["t-marks", "marks"], ["t-shape", "shape"], ["t-heat", "heat"], ["t-offside", "offside"]]) {
+  $(btnId).addEventListener("click", () => setLayer(layer));
 }
+$("ask-form").addEventListener("submit", askClip);
 
 route();
 </script>

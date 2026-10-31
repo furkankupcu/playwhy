@@ -91,3 +91,28 @@ def test_reference_points_measure_without_touching_analysis(client, tmp_path):
     assert client.started == []
     assert json.loads((run / "homography.json").read_text())[0]["H"] == H
 
+
+def test_ask_refuses_answers_without_real_evidence(client, tmp_path, monkeypatch):
+    from goal_explainer import explain
+    run = tmp_path / "runs" / "0123456789abcdef"
+    run.mkdir(parents=True)
+    _clip(run / "input.mp4", 1)
+    (run / "explanation.json").write_text("{}")
+    (run / "events.json").write_text(json.dumps({"key_moments": [{"moment_id": "moment_0", "frame_idx": 0, "timestamp": 1.5}]}))
+    (run / "cues.json").write_text("[]")
+    (run / "pitch.json").write_text("[]")
+    (run / "tracks.json").write_text(json.dumps({"frames": []}))
+    replies = [{"can_answer": True, "answer": "Made up.", "evidence": [{"id": "moment_77", "description": "x"}]},
+               {"can_answer": True, "answer": "Real.", "evidence": [{"id": "moment_0", "description": "y"}]}]
+
+    class Spark:
+        def spark_json(self, prompt, schema):
+            return replies.pop(0)
+
+    monkeypatch.setattr(explain, "get_client", lambda cid: Spark())
+    url = "/api/clips/0123456789abcdef/ask"
+    assert client.post(url, json={"question": "who?"}).json()["can_answer"] is False
+    good = client.post(url, json={"question": "who?"}).json()
+    assert good["answer"] == "Real." and good["evidence"][0]["t"] == 1.5
+    assert client.post(url, json={"question": "x" * 301}).status_code == 422
+

@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from eval.calib_eval import ground_error_m
+from goal_explainer.explain import answer_question
 from goal_explainer.pipeline import STEPS, run_pipeline
 from goal_explainer.pitch import PITCH_KEYPOINTS
 from goal_explainer.track import video_info
@@ -167,6 +168,22 @@ def calibration_reference(clip_id: str, body: CalibrationRequest) -> dict[str, A
               "points_used": int(mask.sum()), "points_given": len(points)}
     (run_dir / "calib_reference.json").write_text(json.dumps({**result, "points": points}, indent=2), encoding="utf-8")
     return result
+
+
+class Question(BaseModel):
+    question: str = Field(min_length=3, max_length=300)
+
+
+@app.post("/api/clips/{clip_id}/ask")
+def ask_clip(clip_id: str, body: Question) -> dict[str, Any]:
+    run_dir = _run_dir(clip_id)
+    if not (run_dir / "explanation.json").is_file():
+        raise HTTPException(409, "Analysis has not finished.")
+    try:
+        return answer_question(clip_id, body.question)
+    except Exception as exc:  # noqa: BLE001 - the viewer sees a message, the log keeps the cause
+        logger.exception("Question failed for %s", clip_id)
+        raise HTTPException(502, "Muse Spark could not answer just now. Try again.") from exc
 
 
 @app.get("/api/clips/{clip_id}/result")
