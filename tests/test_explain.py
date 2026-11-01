@@ -205,3 +205,22 @@ def test_one_shirt_number_names_one_player():
     names = player_names(tracks, [cue(1), cue(2), cue(2)])
     assert names[2] == "blue #32" and names[1] == "blue player 1"
 
+
+def test_why_facts_measure_numbers_and_gaps():
+    from goal_explainer.explain import _collect_valid_ids, add_why_facts
+    def player(pid, team, x, y):
+        return {"player_id": pid, "team": team, "x_m": x, "y_m": y, "timestamp": 1.0}
+    players = [player(0, "ball", 90, 34), player(1, "A", 92, 34), player(2, "A", 95, 40), player(3, "A", 80, 10),
+               player(11, "B", 97, 20), player(12, "B", 96, 26), player(13, "B", 97, 50), player(14, "B", 70, 34),
+               player(99, "B", 104, 34)]  # the keeper must not count
+    events = {"attacking_direction": "right", "goals": [{"t_shot": 1.0}],
+              "passes": [{"frame_idx": 25, "timestamp": 1.0}]}
+    add_why_facts(events, [{"frame_idx": 25, "players": players}], {99})
+    text = events["why"][0]["description"]
+    assert "2 attackers v 1 defenders within 15 m" in text
+    assert "3 defenders goal side" in text
+    assert "2 attackers v 3 defenders in the penalty area" in text
+    assert "3 attackers with no defender within 5 m" in text
+    assert "16 m between 14 and 13" in text
+    assert "why_0" in _collect_valid_ids(events, [])
+
