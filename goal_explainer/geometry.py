@@ -963,8 +963,13 @@ def run(clip_id: str) -> Path:
     if shots:
         attacking_direction = "right" if shots[0].goal_xy[0] > 0 else "left"
     else:
-        last_ball_x = max(ball_positions, key=lambda b: b.frame_idx).x_m if ball_positions else _PITCH_LENGTH
-        attacking_direction = "right" if last_ball_x > _PITCH_LENGTH / 2 else "left"
+        if ball_positions:
+            end_x = max(ball_positions, key=lambda b: b.frame_idx).x_m
+        else:
+            last = max((p.frame_idx for p in player_positions), default=0)
+            xs = [p.x_m for p in player_positions if p.frame_idx == last]
+            end_x = sum(xs) / len(xs) if xs else _PITCH_LENGTH
+        attacking_direction = "right" if end_x > _PITCH_LENGTH / 2 else "left"
     offside = compute_offside_line(player_positions, passes, attacking_direction)
     open_lanes = detect_open_lanes(player_positions, possession)
     lost_man = detect_lost_man(player_positions)

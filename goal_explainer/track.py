@@ -235,6 +235,84 @@ def resolve_duplicates(client, video_path: Path, tracks: list[TracksFrame],
         drop_boxes(tracks, loser, frames)
 
 
+# SAM finds a team by shirt colour only when players are big and the colour word fits
+# (cream shirts in sunlight: 0 detections). "person" still finds them, up to 16 per request.
+_MIN_TEAM_PLAYERS = 7  # on screen at once; broken tracks inflate a count of ids
+_PERSON_ROLES = {"team_a": ("player", "A"), "team_b": ("player", "B"), "goalkeeper_a": ("goalkeeper", "A"),
+                 "goalkeeper_b": ("goalkeeper", "B"), "referee": ("referee", None)}
+_PERSON_SCHEMA = {
+    "type": "object",
+    "properties": {"people": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"number": {"type": "integer"}, "role": {"type": "string", "enum": [*_PERSON_ROLES, "other"]}},
+        "required": ["number", "role"],
+        "additionalProperties": False,
+    }}},
+    "required": ["people"],
+    "additionalProperties": False,
+}
+
+
+def fill_missing_people(client, video_path: Path, tracks: list[TracksFrame], file_id: str,
+                        kits: dict[str, str], first_id: int) -> int:
+    """If a team came back short, track "person" and let Muse Spark name who the new tracks are.
+
+    Returns how many tracks were added. New object ids start at *first_id*.
+    """
+    counts = {t: int(np.median([sum(o["team"] == t and o["cls"] == "player" for o in f["objects"]) for f in tracks]))
+              for t in ("A", "B")}
+    if min(counts.values()) >= _MIN_TEAM_PLAYERS:
+        return 0
+    logger.info("Short team %s: asking SAM for every person", counts)
+    by_id: dict[int, list[dict]] = {}
+    for d in parse_sam_text(client.sam("person", video_file_id=file_id)):
+        if 0 <= d["frame"] < len(tracks):
+            by_id.setdefault(d["id"], []).append(d)
+    new = {}
+    for pid, dets in by_id.items():
+        sample = dets[::10]
+        seen = sum(any(_iou(d["bbox"], o["bbox"]) > 0.5 for o in tracks[d["frame"]]["objects"] if o["cls"] != "ball") for d in sample)
+        if seen < len(sample) / 2:
+            new[pid] = dets
+    if not new:
+        return 0
+    numbered = list(new)
+    tiles = []
+    for n, pid in enumerate(numbered, 1):
+        d = max(new[pid], key=lambda q: (q["bbox"][2] - q["bbox"][0]) * (q["bbox"][3] - q["bbox"][1]))
+        frame = read_frame(video_path, d["frame"])
+        x1, y1, x2, y2 = d["bbox"]
+        pad = max(x2 - x1, y2 - y1) // 3 + 2
+        crop = frame[max(0, y1 - pad):y2 + pad, max(0, x1 - pad):x2 + pad]
+        tile = cv2.resize(crop, (120, 200), interpolation=cv2.INTER_CUBIC)
+        cv2.putText(tile, str(n), (4, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
+        cv2.putText(tile, str(n), (4, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+        tiles.append(tile)
+    blank = np.zeros_like(tiles[0])
+    rows = [np.hstack((tiles[i:i + 8] + [blank] * 8)[:8]) for i in range(0, len(tiles), 8)]
+    colours = ", ".join(f"{role}: {kits.get(role, 'unknown')} shirt" for role in _PERSON_ROLES)
+    reply = client.spark_json(
+        f"Numbered crops of people at a football match. The kits, as seen in another frame: {colours}. "
+        "Colours can look different in sunlight or shade. Give each number its role. Use 'other' for "
+        "coaches, ball kids, spectators and anyone you cannot tell apart.",
+        _PERSON_SCHEMA, images=[jpeg(np.vstack(rows), max_side=1800)],
+    )
+    added = 0
+    for row in reply.get("people", []):
+        n, role = row["number"], row["role"]
+        if role not in _PERSON_ROLES or not 1 <= n <= len(numbered):
+            continue
+        cls, team = _PERSON_ROLES[role]
+        for d in new[numbered[n - 1]]:
+            tracks[d["frame"]]["objects"].append(TrackEntry(
+                object_id=first_id + d["id"], cls=cls, team=team, bbox=d["bbox"],
+                conf=d["conf"], foot_xy=list(foot_position(d["bbox"])),
+            ))
+        added += 1
+    logger.info("Added %d people from the person prompt", added)
+    return added
+
+
 def interpolate_ball(tracks: list[TracksFrame]) -> list[TracksFrame]:
     """Fill ball gaps by linear interpolation; added entries get ``interpolated``."""
     known: dict[int, list[int]] = {}
@@ -325,6 +403,7 @@ def run(video_path: Path, clip_id: str) -> Path:
 
     keep_best_ball(tracks)
     resolve_duplicates(client, video_path, tracks, prompts)
+    fill_missing_people(client, video_path, tracks, file_id, kits, len(prompts) * 1000)
     interpolate_ball(tracks)
 
     tracks_path = out_dir / "tracks.json"

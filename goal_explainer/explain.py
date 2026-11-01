@@ -117,8 +117,15 @@ def player_names(tracks: dict[str, Any], cues: list[dict[str, Any]]) -> dict[int
                 first_seen.setdefault(o["object_id"], (o["team"], o["cls"]))
     names: dict[int, str] = {}
     count: Counter = Counter()
+    owner: dict[tuple[str, str], int] = {}  # (team, number) -> the id it was read on most often
+    for pid, votes in numbers.items():
+        if pid in first_seen:
+            n, reads = votes.most_common(1)[0]
+            key = (first_seen[pid][0], n)
+            if key not in owner or reads > numbers[owner[key]][n]:
+                owner[key] = pid
     for pid, (team, cls) in first_seen.items():
-        if pid in numbers:
+        if pid in numbers and owner.get((team, numbers[pid].most_common(1)[0][0])) == pid:
             names[pid] = f"{colour[team]} #{numbers[pid].most_common(1)[0][0]}"
         elif cls == "goalkeeper":
             names[pid] = f"{colour[team]} keeper"
@@ -168,7 +175,8 @@ def build_explanation_prompt(
         + (f"=== PLAYER NAMES (id: name) ===\n{json.dumps({str(k): v for k, v in names.items()})}\n"
            "In the claim text and summary refer to players ONLY by these names, never by id; "
            "keep the numeric ids in player_ids.\n\n" if names else "")
-        + "Write 3-6 tactical claims explaining WHY this goal happened. "
+        + "Write up to 6 tactical claims explaining WHY this goal happened, one per distinct fact: "
+        "with thin data write fewer, and never restate a claim. "
         "Each claim must be a concise, insightful observation about tactics, "
         "positioning, decision-making, or execution.\n\n"
         "For each claim give t_start/t_end (seconds in the clip), the player_ids "
@@ -187,8 +195,10 @@ def build_explanation_prompt(
         "- commentary is what a broadcast commentator says aloud over this moment: one lively "
         "sentence, at most 25 words, same facts as text, no numbers with decimals.\n"
         "- Do not describe speed (sprint, burst), intent or anything the data does not state.\n"
-        "- The goal moment's player_ids are the players nearest the goal, not the scorer. "
-        "Name a scorer only if a shot event gives a shooter_id."
+        "- The goal moment's player_ids are the players nearest the goal, not the scorer. A shot "
+        "event is the touch before the ball reached the goal mouth, not proof of who scored. "
+        "Never say who scored unless the goal's own description names the player.\n"
+        "- Plain words only: no praise such as clever or brilliant."
     )
 
 
@@ -236,7 +246,7 @@ def audit_explanation(client: Any, explanation: dict[str, Any], events: dict[str
     data = {k: events.get(k, []) for k in ("attacking_direction", "passes", "shots", "goals", "key_moments")}
     audited = client.spark_json(
         "You are checking a football explanation against its data. Keep it fluent, but strike or rewrite "
-        "every statement the data does not support: pitch locations (far post, near post, in behind), "
+        "every statement the data does not support: who scored (a shot event does not prove it), praise, pitch locations (far post, near post, in behind), "
         "effects on opponents (pulled, drew, stretched, isolated, caught), what players could or could not "
         "do, and causes stated as fact. Facing, gaze and reaction are in the cues; lengths, direction and "
         "receiver space are in the passes; goal details are in the goal's description. Do not add facts. "

@@ -113,6 +113,10 @@ _GOAL_PROMPT = (
 )
 
 
+# A later shot this far past Muse Spark's goal time means it named the wrong moment.
+_GOAL_SLACK_S = 2.0
+
+
 def find_goal(client, video_path: Path, duration: float) -> dict[str, Any] | None:
     """Ask Muse Spark (watching the clip) whether and when a goal is scored.
 
@@ -133,6 +137,35 @@ def find_goal(client, video_path: Path, duration: float) -> dict[str, Any] | Non
         return None
     return {"event_id": "goal_0", "timestamp": t_goal, "t_shot": t_shot,
             "description": str(r.get("description", ""))}
+
+
+def reconcile_goal(goal: dict[str, Any], events: dict[str, Any], pitch: list[dict[str, Any]]) -> dict[str, Any]:
+    """Move the goal if Muse Spark's time comes well before a later shot of the attacking team.
+
+    Muse Spark can name an earlier moment of the same attack (17 s for a goal at 23 s when the clip
+    ends right after it). An earlier saved shot does not count against its time: only a later one does.
+    """
+    from collections import Counter
+    teams = Counter(p["team"] for p in events.get("passes", [])).most_common(1)
+    team_at = {(f["frame_idx"], p["player_id"]): p["team"] for f in pitch for p in f["players"]}
+    shots = [s for s in events.get("shots", [])
+             if not teams or team_at.get((s["frame_idx"], s["shooter_id"])) == teams[0][0]]
+    if not shots or max(s["timestamp"] for s in shots) <= goal["timestamp"] + _GOAL_SLACK_S:
+        return goal
+    shot = max(shots, key=lambda s: s["timestamp"])
+    gx, gy = shot["goal_xy"]
+    after = [(p["timestamp"], (p["x_m"] - gx) ** 2 + (p["y_m"] - gy) ** 2) for f in pitch for p in f["players"]
+             if p["team"] == "ball" and shot["timestamp"] < p["timestamp"] <= shot["timestamp"] + _GOAL_SLACK_S]
+    t_goal = min(after, key=lambda a: a[1])[0] if after else shot["timestamp"] + 1.0
+    logger.warning("Goal moved from %.1fs to %.1fs: tracking shows a later shot", goal["timestamp"], t_goal)
+    return {**goal, "timestamp": t_goal, "t_shot": shot["timestamp"]}
+
+
+def drop_after_goal(events: dict[str, Any], t_goal: float) -> None:
+    """Play after the goal cannot explain it; kick-off walks also read as passes."""
+    for key in ("passes", "shots", "key_moments", "pass_chain", "offside"):
+        if key in events:
+            events[key] = [e for e in events[key] if not isinstance(e, dict) or e.get("timestamp", 0) <= t_goal + 0.5]
 
 
 def players_near_goal(pitch: list[dict[str, Any]], frame_idx: int, goal_x: float, k: int = 3) -> list[int]:
@@ -158,14 +191,16 @@ def run(video_path: Path, clip_id: str) -> Path:
 
     goal = find_goal(client, video_path, len(tracks) / fps)
     if goal is not None:
-        events["goals"] = [goal]
         pitch = json.loads((run_dir / "pitch.json").read_text(encoding="utf-8"))
+        goal = reconcile_goal(goal, events, pitch)
+        drop_after_goal(events, goal["timestamp"])
+        events["goals"] = [goal]
         shot_frame = min(int(round(goal["t_shot"] * fps)), len(tracks) - 1)
         goal_x = 105.0 if events.get("attacking_direction") != "left" else 0.0
         # re-runs must not stack goal moments
         events["key_moments"] = [m for m in events.get("key_moments", []) if m.get("event_type") != "goal"]
         events["key_moments"].append({
-            "moment_id": f"moment_{len(events.get('key_moments', []))}",
+            "moment_id": f"moment_{1 + max((int(m['moment_id'].split('_')[1]) for m in events.get('key_moments', [])), default=-1)}",
             "frame_idx": shot_frame, "timestamp": goal["t_shot"], "event_type": "goal",
             "player_ids": players_near_goal(pitch, shot_frame, goal_x),
             "description": f"The scoring shot. {goal['description']}",

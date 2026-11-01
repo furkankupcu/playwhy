@@ -92,3 +92,51 @@ def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
     events_content = json.loads((clip_dir / "events.json").read_text(encoding="utf-8"))
     valid_ids = explain._collect_valid_ids(events_content, cues=[])
     assert isinstance(valid_ids, set)
+
+
+def test_later_shot_overrules_goal_time_and_after_goal_play_is_dropped():
+    from goal_explainer.read import drop_after_goal, reconcile_goal
+    pitch = [{"frame_idx": 500, "players": [{"player_id": 7, "team": "A", "timestamp": 20.0, "x_m": 90, "y_m": 30}]},
+             {"frame_idx": 540, "players": [{"player_id": 0, "team": "ball", "timestamp": 21.6, "x_m": 104, "y_m": 34}]}]
+    events = {"passes": [{"team": "A", "timestamp": 23.5}],
+              "shots": [{"timestamp": 20.0, "frame_idx": 500, "shooter_id": 7, "goal_xy": [105, 34]}]}
+    late = reconcile_goal({"timestamp": 17.0, "t_shot": 16.0}, events, pitch)
+    assert late["t_shot"] == 20.0 and late["timestamp"] == 21.6
+    # a goal after an earlier shot keeps its time
+    assert reconcile_goal({"timestamp": 22.0, "t_shot": 21.0}, events, pitch)["timestamp"] == 22.0
+    drop_after_goal(events, late["timestamp"])
+    assert events["passes"] == [] and len(events["shots"]) == 1
+
+
+def test_person_fallback_adds_named_tracks_only_for_a_short_team(monkeypatch, tmp_path):
+    import numpy as np
+    from goal_explainer import track
+
+    box = lambda x: [x, 10, x + 10, 40]  # noqa: E731
+    frames = [{"frame_idx": i, "timestamp": i / 25, "objects": [
+        {"object_id": 1000 + k, "cls": "player", "team": "A", "bbox": box(k * 30), "conf": 0.9, "foot_xy": [0, 0]} for k in range(8)
+    ]} for i in range(3)]
+
+    class Client:
+        def sam(self, prompt, video_file_id=None):
+            assert prompt == "person"
+            return "stub"
+
+        def spark_json(self, prompt, schema, images=None):
+            assert "white shirt" in prompt and images
+            return {"people": [{"number": 1, "role": "team_b"}, {"number": 2, "role": "other"}]}
+
+    people = [{"id": 5, "frame": f, "bbox": box(600), "conf": 0.7} for f in range(3)]  # new person
+    people += [{"id": 6, "frame": f, "bbox": box(700), "conf": 0.7} for f in range(3)]  # staff
+    people += [{"id": 7, "frame": f, "bbox": box(0), "conf": 0.7} for f in range(3)]  # already tracked
+    monkeypatch.setattr(track, "parse_sam_text", lambda text: people)
+    monkeypatch.setattr(track, "read_frame", lambda path, i: np.zeros((100, 800, 3), np.uint8))
+    assert track.fill_missing_people(Client(), tmp_path, frames, "f", {"team_b": "white"}, 5000) == 1
+    assert {o["object_id"] for o in frames[0]["objects"] if o["team"] == "B"} == {5005}
+    assert not any(o["object_id"] in (5006, 5007) for o in frames[0]["objects"])
+    # both teams full: no extra request
+    for f in frames:
+        f["objects"] += [{"object_id": 2000 + k, "cls": "player", "team": "B", "bbox": box(k), "conf": 1, "foot_xy": [0, 0]} for k in range(7)]
+    monkeypatch.setattr(track, "parse_sam_text", lambda text: 1 / 0)
+    assert track.fill_missing_people(Client(), tmp_path, frames, "f", {}, 5000) == 0
+

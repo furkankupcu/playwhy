@@ -196,3 +196,12 @@ def test_name_ids_hides_internal_ids():
         "blue player 9 got clear of white player 4, pass to blue player 2"
     assert name_ids("Player 7777 in 2026", names) == "Player 7777 in 2026"
 
+
+def test_one_shirt_number_names_one_player():
+    from goal_explainer.explain import player_names
+    tracks = {"kits": {"team_a": "blue"}, "frames": [{"objects": [
+        {"object_id": 1, "cls": "player", "team": "A"}, {"object_id": 2, "cls": "player", "team": "A"}]}]}
+    cue = lambda pid: {"player_id": pid, "jersey_number": "32", "visible": True}  # noqa: E731
+    names = player_names(tracks, [cue(1), cue(2), cue(2)])
+    assert names[2] == "blue #32" and names[1] == "blue player 1"
+
