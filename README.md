@@ -2,6 +2,8 @@
 
 ![PlayWhy: one football clip in, why the move worked out](docs/images/cover.jpg)
 
+**▶ Demo video (2.5 min): [youtu.be/p1A3SR2Veiw](https://youtu.be/p1A3SR2Veiw)**
+
 **Upload a short video of a football goal, or any attacking move. Read why it worked: who opened the space, who lost their man, and how — with every claim tied to a moment you can see in the clip.**
 
 Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026) on the **Meta Model API only**: SAM 3.1 and Muse Spark. No model is trained or fine-tuned.
@@ -44,7 +46,7 @@ The app also draws **who is marking whom** live over the video and on a top-down
 | ![Analysis in progress](docs/images/progress.jpg) | ![A clip without a goal](docs/images/no-goal-clip.jpg) |
 | **Progress** while SAM 3.1 and Muse Spark work (about 10 min per clip). | **No goal?** The move is explained from positions and distances. |
 
-A 2.5-minute walkthrough: `demo/playwhy-demo.mp4` (made by `demo/capture.py` and `demo/compose.py` from the running app).
+A 2.5-minute walkthrough: [youtu.be/p1A3SR2Veiw](https://youtu.be/p1A3SR2Veiw), cut by `demo/capture.py` and `demo/compose.py` from the running app.
 
 ## How it works
 
