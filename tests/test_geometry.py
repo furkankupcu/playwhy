@@ -212,3 +212,11 @@ def test_key_moments_are_capped_to_the_attack():
     assert [m.event_type for m in km].count("lost_man") == 4
     assert {m.player_ids[0] for m in km if m.event_type == "lost_man"} == {2, 3, 4, 5}  # the last four before the pass
     assert [m.moment_id for m in km] == list(range(len(km)))
+
+
+def test_keeper_belongs_to_the_team_defending_his_goal():
+    from goal_explainer.geometry import PlayerPosition, assign_keepers
+    ps = [PlayerPosition(i, i / 25, 7, "A", 101.0, 34.0) for i in range(5)]
+    assign_keepers(ps, {7}, "A", "right")  # A attacks the goal at x = 105, so its keeper is B's
+    assert {p.team for p in ps} == {"B"}
+

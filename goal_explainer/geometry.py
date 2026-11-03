@@ -189,6 +189,9 @@ def pixel_to_pitch(px: tuple[float, float], H: np.ndarray) -> tuple[float, float
 # Position building & smoothing
 # ---------------------------------------------------------------------------
 
+_KEEPER_ZONE_M = 25.0  # a keeper's median spot is this close to a goal line
+
+
 def build_positions(
     tracks: list[dict], homographies: list[dict]
 ) -> list[PlayerPosition]:
@@ -243,7 +246,8 @@ def build_positions(
             pid = obj.get("object_id", obj.get("track_id", -1))
             team = "ball" if label == "ball" else (obj.get("team") or "unknown")
             if label == "goalkeeper":
-                inside = 0 <= x_m <= _PITCH_LENGTH and 0 <= y_m <= _PITCH_WIDTH
+                # a referee or coach in the keeper's colour stands away from both goals
+                inside = 0 <= x_m <= _PITCH_LENGTH and 0 <= y_m <= _PITCH_WIDTH and min(x_m, _PITCH_LENGTH - x_m) <= _KEEPER_ZONE_M
                 keeper_frames_inside[(team, pid)] = keeper_frames_inside.get((team, pid), 0) + inside
             positions.append(
                 PlayerPosition(
@@ -265,6 +269,26 @@ def build_positions(
             best[team] = (pid, n)
     not_keepers = {pid for (team, pid) in keeper_frames_inside if best[team][0] != pid}
     return [p for p in positions if p.player_id not in not_keepers]
+
+
+def assign_keepers(positions: list[PlayerPosition], keepers: set[int], attacking_team: str | None,
+                   attacking_direction: str) -> None:
+    """A keeper plays for the team defending the goal he stands in front of.
+
+    Muse Spark cannot tell which team a keeper's colour belongs to, so the kit label is often wrong.
+    """
+    if attacking_team not in ("A", "B"):
+        return
+    defending = "B" if attacking_team == "A" else "A"
+    attacked_x = _PITCH_LENGTH if attacking_direction == "right" else 0.0
+    for pid in keepers:
+        xs = [p.x_m for p in positions if p.player_id == pid]
+        if not xs:
+            continue
+        team = defending if abs(float(np.median(xs)) - attacked_x) < _PITCH_LENGTH / 2 else attacking_team
+        for p in positions:
+            if p.player_id == pid:
+                p.team = team
 
 
 def smooth_positions(
@@ -970,6 +994,10 @@ def run(clip_id: str) -> Path:
             xs = [p.x_m for p in player_positions if p.frame_idx == last]
             end_x = sum(xs) / len(xs) if xs else _PITCH_LENGTH
         attacking_direction = "right" if end_x > _PITCH_LENGTH / 2 else "left"
+    from collections import Counter
+    teams = Counter(ev.team for ev in possession).most_common(1)
+    keepers = {o["object_id"] for f in tracks["frames"] for o in f["objects"] if o.get("cls") == "goalkeeper"}
+    assign_keepers(positions, keepers, teams[0][0] if teams else None, attacking_direction)
     offside = compute_offside_line(player_positions, passes, attacking_direction)
     open_lanes = detect_open_lanes(player_positions, possession)
     lost_man = detect_lost_man(player_positions)
@@ -978,9 +1006,6 @@ def run(clip_id: str) -> Path:
     shot = shots[0] if shots else None
     pass_chain = build_pass_chain(passes, shot)
     # Attacking team = the team that had the ball most
-    from collections import Counter
-    teams = Counter(ev.team for ev in possession).most_common(1)
-    keepers = {o["object_id"] for f in tracks["frames"] for o in f["objects"] if o.get("cls") == "goalkeeper"}
     attackers = {p.player_id for p in player_positions if teams and p.team == teams[0][0]} - keepers
     key_moments = collect_key_moments(passes, shots, lost_man, attackers or None)
 

@@ -220,7 +220,19 @@ def test_why_facts_measure_numbers_and_gaps():
     assert "2 attackers v 1 defenders within 15 m" in text
     assert "3 defenders goal side" in text
     assert "2 attackers v 3 defenders in the penalty area" in text
-    assert "3 attackers with no defender within 5 m" in text
+    assert "3 attackers in the final third with no defender within 5 m" in text
     assert "16 m between 14 and 13" in text
     assert "why_0" in _collect_valid_ids(events, [])
+
+
+def test_claim_numbers_must_come_from_its_evidence():
+    from goal_explainer.explain import unsupported_numbers
+    sources = {"why_1": {"description": "6 attackers in the final third with no defender within 5 m"},
+               "pass_1": {"length_m": 4.8, "receiver_nearest_opponent_m": 5.2}}
+    names = {2005: "blue #38", 2001: "blue player 2"}
+    ok = {"text": "Blue #38 and blue player 2 had six free attackers around them after a 4.8 m pass, 5.2 m clear.",
+          "commentary": "Six free!", "evidence": [{"id": "why_1"}, {"id": "pass_1"}]}
+    assert unsupported_numbers(ok, sources, names) == []
+    bad = {**ok, "text": "There were four attackers with no defender within 5 m.", "evidence": [{"id": "why_1"}]}
+    assert unsupported_numbers(bad, sources, names) == ["4.0"]
 

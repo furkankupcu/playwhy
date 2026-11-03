@@ -190,7 +190,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
   <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:16px">
     <h1 style="margin:0;font-size:26px;letter-spacing:-.01em">Click 4 or more points you can see, then name each one</h1>
     <p class="muted" style="margin:0">Corners of the penalty box and goal area work best. Tracking follows the camera from there.</p>
-    <p class="muted" style="margin:0">Kamera kale arkasındaysa kameraya yakın kaleyi "sağ kale" say: görüntünün solundaki taç çizgisi "yakın", sağındaki "uzak" olur. Kamera yan tribündeyse şablonu olduğu gibi oku.</p>
+    <p class="muted" style="margin:0">From behind a goal, call the goal nearest the camera the right goal: the touchline on the left of the frame is then "near". From the side stands, read the map as it is.</p>
   </div>
   <div class="cal-grid">
     <div class="panel cal-frame">
@@ -199,15 +199,15 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       </div>
       <div class="muted" style="padding:10px 14px;font-size:14px">Click in the frame to add a point. Last point: <span id="cal-last">none</span>.</div>
       <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:6px">
-        <span class="label">Saha şablonu</span>
-        <p class="muted" style="margin:0;font-size:14px">Önce görüntüde bir noktaya tıkla, sonra burada numarasına tıkla. Sarı numaralar kullanıldı.</p>
-        <span class="muted" style="text-align:center;font-size:13px">uzak taç çizgisi</span>
+        <span class="label">Pitch map</span>
+        <p class="muted" style="margin:0;font-size:14px">Click a point in the frame, then its number here. Yellow numbers are in use.</p>
+        <span class="muted" style="text-align:center;font-size:13px">far touchline</span>
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="muted" style="font-size:13px">sol kale</span>
-          <svg id="cal-template" viewBox="-3.5 -3.5 112 75" role="img" aria-label="Numaralı saha şablonu" style="flex:1;min-width:0;background:#1F3A2B;border-radius:8px"></svg>
-          <span class="muted" style="font-size:13px">sağ kale</span>
+          <span class="muted" style="font-size:13px">left goal</span>
+          <svg id="cal-template" viewBox="-3.5 -3.5 112 75" role="img" aria-label="Numbered pitch map" style="flex:1;min-width:0;background:#1F3A2B;border-radius:8px"></svg>
+          <span class="muted" style="font-size:13px">right goal</span>
         </div>
-        <span class="muted" style="text-align:center;font-size:13px">yakın taç çizgisi (kameraya yakın)</span>
+        <span class="muted" style="text-align:center;font-size:13px">near touchline (closest to the camera)</span>
       </div>
     </div>
     <div class="cal-side">
@@ -443,18 +443,17 @@ async function openProgress(id) {
 // ---------------------------------------------------------------- calibrate
 let calPoints = [];
 let keypoints = null;
-// shortcut: Turkish labels for hand marking, switch back to English before submission
-const KP_TR = { bottom_left: "Korner: sol yakın", bottom_right: "Korner: sağ yakın", top_left: "Korner: sol uzak", top_right: "Korner: sağ uzak",
-  halfway_bottom: "Orta çizgi: yakın taç çizgisiyle kesişim", halfway_top: "Orta çizgi: uzak taç çizgisiyle kesişim",
-  center_spot: "Santra noktası", center_circle_top: "Orta daire: uzak nokta", center_circle_bottom: "Orta daire: yakın nokta",
-  center_circle_left: "Orta daire: sol nokta", center_circle_right: "Orta daire: sağ nokta",
-  left_goal_center: "Kale ortası: sol kale", right_goal_center: "Kale ortası: sağ kale",
-  left_penalty_spot: "Penaltı noktası: sol", right_penalty_spot: "Penaltı noktası: sağ" };
+const KP_NAMES = { bottom_left: "Corner: left, near", bottom_right: "Corner: right, near", top_left: "Corner: left, far", top_right: "Corner: right, far",
+  halfway_bottom: "Halfway line: near touchline", halfway_top: "Halfway line: far touchline",
+  center_spot: "Centre spot", center_circle_top: "Centre circle: far point", center_circle_bottom: "Centre circle: near point",
+  center_circle_left: "Centre circle: left point", center_circle_right: "Centre circle: right point",
+  left_goal_center: "Goal centre: left goal", right_goal_center: "Goal centre: right goal",
+  left_penalty_spot: "Penalty spot: left", right_penalty_spot: "Penalty spot: right" };
 function prettyKp(k) {
   const m = k.match(/^(left|right)_(pa|ga)_(bottom|top)_(left|right)$/);
-  if (!m) return KP_TR[k] || k;
+  if (!m) return KP_NAMES[k] || k;
   const onGoalLine = m[1] === m[4];  // the box corner on the goal's own side touches the goal line
-  return `${m[2] === "pa" ? "Ceza sahası" : "Kale alanı"} ${m[1] === "left" ? "sol" : "sağ"}: ${m[3] === "bottom" ? "yakın" : "uzak"} ${onGoalLine ? "köşe, kale çizgisinde" : "ön köşe"}`;
+  return `${m[2] === "pa" ? "Penalty box" : "Goal area"} ${m[1]}: ${m[3] === "bottom" ? "near" : "far"} ${onGoalLine ? "corner on the goal line" : "front corner"}`;
 }
 
 async function openCalibrate(id) {
@@ -512,7 +511,7 @@ function renderCal() {
   $("cal-empty").hidden = calPoints.length > 0;
   $("cal-points").replaceChildren(...calPoints.map((p, i) => {
     const sel = el("select", { "aria-label": `Pitch point for marker ${i + 1}`, onchange: (e) => { p.kp = e.target.value; renderCal(); } },
-      el("option", { value: "", text: "Bu saha noktası hangisi?" }),
+      el("option", { value: "", text: "Which pitch point is this?" }),
       ...Object.keys(keypoints || {}).map((k, n) => { const o = el("option", { value: k, text: `${n + 1}. ${prettyKp(k)}` }); if (k === p.kp) o.selected = true; return o; }),
     );
     return el("div", { class: "cal-point" },

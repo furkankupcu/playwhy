@@ -96,7 +96,8 @@ _MIN_CUE_CONFIDENCE = 0.5
 # ---------------------------------------------------------------------------
 
 
-def player_names(tracks: dict[str, Any], cues: list[dict[str, Any]]) -> dict[int, str]:
+def player_names(tracks: dict[str, Any], cues: list[dict[str, Any]],
+                 pitch: list[dict[str, Any]] | None = None) -> dict[int, str]:
     """Human names for tracked ids: "blue #6", "blue keeper", or "blue player 3".
 
     Shirt colours come from tracks.json (read by Muse Spark), numbers from the cues
@@ -117,6 +118,14 @@ def player_names(tracks: dict[str, Any], cues: list[dict[str, Any]]) -> dict[int
         for o in f["objects"]:
             if o["cls"] in ("player", "goalkeeper") and o.get("team") in colour:
                 first_seen.setdefault(o["object_id"], (o["team"], o["cls"]))
+    settled: dict[int, Counter] = {}
+    for f in pitch or []:
+        for p in f["players"]:
+            settled.setdefault(p["player_id"], Counter())[p["team"]] += 1
+    for pid, votes in settled.items():
+        team = votes.most_common(1)[0][0]
+        if pid in first_seen and team in colour:
+            first_seen[pid] = (team, first_seen[pid][1])
     names: dict[int, str] = {}
     count: Counter = Counter()
     owner: dict[tuple[str, str], int] = {}  # (team, number) -> the id it was read on most often
@@ -201,7 +210,8 @@ def build_explanation_prompt(
         "claim should say what those numbers made possible, citing the why event: a numerical advantage, "
         "a gap wider than typical, too few defenders goal side, a free attacker. You may use because, so "
         "and left when a why event supports it. Say nothing about advantage when the numbers are level. "
-        "Open the summary with the main reason this goal happened.\n"
+        "Open the summary with the clearest measured reason (an advantage in numbers, or a gap wider "
+        "than typical). If no why event shows one, say the numbers were level and name no main reason.\n"
         "- Do not describe speed (sprint, burst), intent or anything else the data does not state.\n"
         "- The goal moment's player_ids are the players nearest the goal, not the scorer. A shot "
         "event is the touch before the ball reached the goal mouth, not proof of who scored. "
@@ -331,6 +341,27 @@ def add_pass_facts(events: dict[str, Any], pitch: list[dict[str, Any]] | None = 
 _BOX_DEPTH_M, _BOX_Y = 16.5, (13.84, 54.16)
 _NEAR_BALL_M = 15.0
 _FREE_M = 5.0
+_FINAL_THIRD_M = 35.0
+_BYLINE_M = 6.0
+_NUMBER_WORDS = {w: i for i, w in enumerate(
+    "zero _ two three four five six seven eight nine ten eleven twelve".split()) if w != "_"}
+
+
+def unsupported_numbers(claim: dict[str, Any], sources: dict[str, Any], names: dict[int, str]) -> list[str]:
+    """Numbers in a claim that none of its cited evidence contains ("four free" citing a fact of six)."""
+    allowed: set[float] = set()
+    for ev in claim.get("evidence", []):
+        for n in re.findall(r"-?\d+(?:\.\d+)?", json.dumps(sources.get(str(ev["id"]), ""))):
+            allowed |= {round(float(n), 1), float(round(float(n)))}
+    bad = []
+    for text in (claim.get("text", ""), claim.get("commentary", "")):
+        for name in sorted(names.values(), key=len, reverse=True):
+            text = text.replace(name, " ").replace(name[:1].upper() + name[1:], " ")
+        text = re.sub(r"#\d+|\b(?:number|No\.)\s*\d+", " ", text)
+        found = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", text)]
+        found += [float(_NUMBER_WORDS[w]) for w in re.findall(r"[a-z]+", text.lower()) if w in _NUMBER_WORDS]
+        bad += [str(n) for n in found if round(n, 1) not in allowed and float(round(n)) not in allowed]
+    return bad
 
 
 def _back_gap(defenders: list[dict[str, Any]], goal_x: float) -> tuple[float, int, int] | None:
@@ -383,12 +414,14 @@ def add_why_facts(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: 
         if ball:
             near = lambda ps: sum(np.hypot(p["x_m"] - ball["x_m"], p["y_m"] - ball["y_m"]) <= _NEAR_BALL_M for p in ps)  # noqa: E731
             parts.append(f"{near(ours)} attackers v {near(theirs)} defenders within 15 m of the ball")
-            parts.append(f"{sum(sign * (p['x_m'] - ball['x_m']) > 0 for p in theirs)} defenders goal side of the ball")
+            if abs(ball["x_m"] - goal_x) > _BYLINE_M:  # on the byline nobody can be goal side
+                parts.append(f"{sum(sign * (p['x_m'] - ball['x_m']) > 0 for p in theirs)} defenders goal side of the ball")
         box = lambda ps: sum(abs(p["x_m"] - goal_x) <= _BOX_DEPTH_M and _BOX_Y[0] <= p["y_m"] <= _BOX_Y[1] for p in ps)  # noqa: E731
         parts.append(f"{box(ours)} attackers v {box(theirs)} defenders in the penalty area")
         if theirs:
-            free = [p for p in ours if min(np.hypot(p["x_m"] - q["x_m"], p["y_m"] - q["y_m"]) for q in theirs) > _FREE_M]
-            parts.append(f"{len(free)} attackers with no defender within 5 m")
+            free = [p for p in ours if abs(p["x_m"] - goal_x) <= _FINAL_THIRD_M
+                    and min(np.hypot(p["x_m"] - q["x_m"], p["y_m"] - q["y_m"]) for q in theirs) > _FREE_M]
+            parts.append(f"{len(free)} attackers in the final third with no defender within 5 m")
         gap = _back_gap(theirs, goal_x)
         if gap and typical is not None:
             parts.append(f"widest gap in the back line {round(gap[0])} m between {gap[1]} and {gap[2]} (typical in this clip {round(typical)} m)")
@@ -524,7 +557,7 @@ def answer_question(clip_id: str, question: str) -> dict[str, Any]:
     run_dir = Path("runs") / clip_id
     load = lambda name: json.loads((run_dir / name).read_text(encoding="utf-8"))  # noqa: E731
     events, all_cues, tracks = load("events.json"), load("cues.json"), load("tracks.json")
-    names = player_names(tracks, all_cues)
+    names = player_names(tracks, all_cues, load("pitch.json"))
     cues = strong_cues(all_cues)
     add_pass_facts(events, load("pitch.json"))
     add_why_facts(events, load("pitch.json"), {o["object_id"] for f in tracks["frames"] for o in f["objects"] if o["cls"] == "goalkeeper"})
@@ -600,9 +633,9 @@ def run(video_path: Path, clip_id: str) -> Path:
     logger.info("Clip duration: %.2f s", clip_duration)
 
     tracks = json.loads((run_dir / "tracks.json").read_text(encoding="utf-8"))
-    names = player_names(tracks, cues)  # shirt numbers from every read, evidence only from strong ones
-    cues = strong_cues(cues)
     pitch = json.loads((run_dir / "pitch.json").read_text(encoding="utf-8"))
+    names = player_names(tracks, cues, pitch)  # shirt numbers from every read, evidence only from strong ones
+    cues = strong_cues(cues)
     add_pass_facts(events, pitch)
     add_why_facts(events, pitch, {o["object_id"] for f in tracks["frames"] for o in f["objects"] if o["cls"] == "goalkeeper"})
     prompt = build_explanation_prompt(events, cues, names)
@@ -618,6 +651,17 @@ def run(video_path: Path, clip_id: str) -> Path:
     for claim in explanation["claims"]:
         claim["text"] = name_ids(claim["text"], names)
         claim["commentary"] = name_ids(claim["commentary"], names)
+    sources = {str(e.get("event_id") or e.get("moment_id")): e for k in ("passes", "shots", "goals", "key_moments", "why")
+               for e in events.get(k, []) if isinstance(e, dict)}
+    sources.update({_cue_id(c): c for c in cues})
+    kept = []
+    for claim in explanation["claims"]:
+        bad = unsupported_numbers(claim, sources, names)
+        if bad:
+            logger.warning("Removed claim %s: numbers %s are not in its evidence", claim.get("claim_id"), bad)
+        else:
+            kept.append(claim)
+    explanation["claims"] = kept
     # The audit can "strike" a phrase and keep it reworded with ids; that was never removed.
     final = " ".join(c["text"] + " " + c["commentary"] for c in explanation["claims"]).lower()
     explanation["audit_removed"] = [r for r in explanation.get("audit_removed", []) if name_ids(r, names).lower() not in final]
