@@ -172,10 +172,12 @@ def build_explanation_prompt(
     valid_event_ids = list(dict.fromkeys(valid_event_ids))
 
     valid_cue_ids = [_cue_id(c) for c in cues]
+    # A clip without a goal still has a move to explain from positions and distances.
+    topic = "this goal happened" if events.get("goals") else "this attack developed as it did (the clip has no goal)"
 
     return (
         "You are an expert football analyst. Below are structured data about a "
-        "goal: detected events and visual player cues.\n\n"
+        "football clip: detected events and visual player cues.\n\n"
         "=== EVENTS ===\n"
         f"{events_json}\n\n"
         "=== PLAYER CUES ===\n"
@@ -186,7 +188,7 @@ def build_explanation_prompt(
         + (f"=== PLAYER NAMES (id: name) ===\n{json.dumps({str(k): v for k, v in names.items()})}\n"
            "In the claim text and summary refer to players ONLY by these names, never by id; "
            "keep the numeric ids in player_ids.\n\n" if names else "")
-        + "Write up to 6 tactical claims explaining WHY this goal happened, one per distinct fact: "
+        + f"Write up to 6 tactical claims explaining WHY {topic}, one per distinct fact: "
         "with thin data write fewer, and never restate a claim. "
         "Each claim must be a concise, insightful observation about tactics, "
         "positioning, decision-making, or execution.\n\n"
@@ -210,7 +212,7 @@ def build_explanation_prompt(
         "claim should say what those numbers made possible, citing the why event: a numerical advantage, "
         "a gap wider than typical, too few defenders goal side, a free attacker. You may use because, so "
         "and left when a why event supports it. Say nothing about advantage when the numbers are level. "
-        "Open the summary with the clearest measured reason (an advantage in numbers, or a gap wider "
+        "Open the summary with the clearest measured finding (an advantage in numbers, or a gap wider "
         "than typical). If no why event shows one, say the numbers were level and name no main reason.\n"
         "- Do not describe speed (sprint, burst), intent or anything else the data does not state.\n"
         "- The goal moment's player_ids are the players nearest the goal, not the scorer. A shot "
@@ -402,6 +404,11 @@ def add_why_facts(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: 
         for t, label in ((goal["t_shot"] - 3.0, "three seconds before the finish"), (goal["t_shot"], "the finish")):
             if t >= 0:
                 moments.append((int(t * fps), t, label))
+    elif frames:  # no goal: the clip's middle and last frame with the ball
+        with_ball = [f for f in frames if any(p["team"] == "ball" for p in f["players"])]
+        if with_ball:
+            for f, label in ((with_ball[len(with_ball) // 2], "the middle of the clip"), (with_ball[-1], "the end of the clip")):
+                moments.append((f["frame_idx"], f["players"][0]["timestamp"], label))
     by_frame = {f["frame_idx"]: f["players"] for f in frames}
     facts = []
     for frame_idx, t, label in sorted(moments, key=lambda m: m[0]):

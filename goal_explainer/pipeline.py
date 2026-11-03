@@ -106,6 +106,8 @@ def main() -> None:
         help='JSON list, e.g. \'[{"px": [100, 200], "pitch": [88.5, 13.84]}, ...]\' (4+ points).',
     )
     parser.add_argument("--skip-to", type=int, default=1, help="Step number to resume from (1–6).")
+    parser.add_argument("--goal", choices=("yes", "no", "auto"), default=None,
+                        help="Does the clip contain a goal? 'auto' lets Muse Spark decide (default).")
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -119,7 +121,12 @@ def main() -> None:
         except json.JSONDecodeError as exc:
             sys.exit(f"Error: invalid --manual-points JSON: {exc}")
 
-    log = run_pipeline(video_path, args.clip_id or video_path.stem, manual_points, args.skip_to)
+    clip_id = args.clip_id or video_path.stem
+    if args.goal:
+        run_dir = Path("runs") / clip_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "clip.json").write_text(json.dumps({"goal": args.goal}), encoding="utf-8")
+    log = run_pipeline(video_path, clip_id, manual_points, args.skip_to)
     sys.exit(0 if log["ok"] else 1)
 
 

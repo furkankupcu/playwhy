@@ -189,7 +189,11 @@ def run(video_path: Path, clip_id: str) -> Path:
     client = get_client(clip_id)
     half_s = int(round(0.5 * fps))
 
-    goal = find_goal(client, video_path, len(tracks) / fps)
+    # The person who filmed the clip knows if it has a goal; Muse Spark has called goals that were not.
+    hint = (json.loads((run_dir / "clip.json").read_text(encoding="utf-8")) if (run_dir / "clip.json").is_file() else {}).get("goal", "auto")
+    goal = None if hint == "no" else find_goal(client, video_path, len(tracks) / fps)
+    if hint == "yes" and goal is None:
+        logger.warning("The clip is marked as having a goal, but Muse Spark could not place it")
     if goal is not None:
         pitch = json.loads((run_dir / "pitch.json").read_text(encoding="utf-8"))
         goal = reconcile_goal(goal, events, pitch)

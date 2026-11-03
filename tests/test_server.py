@@ -120,3 +120,10 @@ def test_ask_refuses_answers_without_real_evidence(client, tmp_path, monkeypatch
     assert good["answer"] == "Real." and good["evidence"][0]["t"] == 1.5
     assert client.post(url, json={"question": "x" * 301}).status_code == 422
 
+
+def test_upload_records_whether_the_clip_has_a_goal(client, tmp_path):
+    data = _clip(tmp_path / "b.mp4", 2)
+    r = client.post("/api/clips", files={"file": ("b.mp4", data, "video/mp4")}, data={"goal": "no"})
+    assert json.loads((tmp_path / "runs" / r.json()["clip_id"] / "clip.json").read_text()) == {"goal": "no"}
+    assert client.post("/api/clips", files={"file": ("b.mp4", data, "video/mp4")}, data={"goal": "maybe"}).status_code == 422
+

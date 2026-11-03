@@ -236,3 +236,15 @@ def test_claim_numbers_must_come_from_its_evidence():
     bad = {**ok, "text": "There were four attackers with no defender within 5 m.", "evidence": [{"id": "why_1"}]}
     assert unsupported_numbers(bad, sources, names) == ["4.0"]
 
+
+def test_clip_without_goal_is_explained_as_a_move():
+    from goal_explainer.explain import add_why_facts, build_explanation_prompt
+    def player(pid, team, x, y, t):
+        return {"player_id": pid, "team": team, "x_m": x, "y_m": y, "timestamp": t}
+    frames = [{"frame_idx": i, "players": [player(0, "ball", 80, 34, i / 25), player(1, "A", 81, 34, i / 25),
+                                          player(2, "B", 95, 30, i / 25)]} for i in range(0, 100, 10)]
+    events = {"attacking_direction": "right", "passes": []}
+    add_why_facts(events, frames, set())
+    assert [w["moment"] for w in events["why"]] == ["the middle of the clip", "the end of the clip"]
+    assert "the clip has no goal" in build_explanation_prompt(events, [])
+

@@ -158,6 +158,12 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       <span class="muted" style="font-size:14px">One wide-angle shot · up to 20 s · ends in or near the box</span>
       <input id="file" type="file" accept="video/mp4,video/quicktime">
     </label>
+    <fieldset style="border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:15px">
+      <legend class="muted" style="padding:0;margin-bottom:6px;font-size:14px">Is there a goal in the clip?</legend>
+      <label><input type="radio" name="goal" value="auto" checked> Let Muse Spark decide</label>
+      <label><input type="radio" name="goal" value="yes"> Yes</label>
+      <label><input type="radio" name="goal" value="no"> No, explain the move</label>
+    </fieldset>
     <p id="upload-msg" class="notice notice-err" role="alert" hidden></p>
   </div>
   <section class="panel how" aria-label="How it works">
@@ -288,7 +294,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
   <section class="explain" aria-label="Explanation">
     <div class="claims">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
-        <h2>Why this goal happened</h2>
+        <h2 id="explain-title">Why this goal happened</h2>
         <div style="display:flex;gap:6px">
           <button id="cast" class="btn" aria-pressed="false">Play commentary</button>
           <button id="prev" class="btn icon-btn" aria-label="Previous claim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -398,6 +404,7 @@ async function upload(file) {
   drop.querySelector("span").textContent = `Uploading ${file.name}…`;
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("goal", document.querySelector('input[name="goal"]:checked').value);
   try {
     const { clip_id } = await api("/api/clips", { method: "POST", body: fd });
     location.hash = `#/clip/${clip_id}`;
@@ -574,6 +581,7 @@ async function openResult(id) {
   $("recal").href = `#/clip/${id}/calibrate`;
   $("tl-end").textContent = fmt(d.duration);
   $("summary").textContent = d.explanation.summary || "";
+  $("explain-title").textContent = (d.events.goals || []).length ? "Why this goal happened" : "What the numbers show";
   // Zoom the top-down view on the attacked half: the action is there, a full pitch shrinks it.
   $("pitch").setAttribute("viewBox", d.events.attacking_direction === "left" ? "-3 -2 60 72" : "48 -2 60 72");
   $("lg-a").textContent = d.shirts ? `Team A (${d.shirts.A} shirts)` : "Team A";

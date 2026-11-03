@@ -21,7 +21,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -86,7 +86,9 @@ def _start(clip_id: str, manual_points: list[dict[str, Any]] | None = None, skip
 # ---------------------------------------------------------------------------
 
 @app.post("/api/clips")
-async def upload_clip(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_clip(file: UploadFile = File(...), goal: str = Form("auto")) -> dict[str, Any]:
+    if goal not in ("yes", "no", "auto"):
+        raise HTTPException(422, "goal must be yes, no or auto.")
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File is larger than 300 MB.")
@@ -110,6 +112,7 @@ async def upload_clip(file: UploadFile = File(...)) -> dict[str, Any]:
         video.unlink(missing_ok=True)
         raise HTTPException(400, f"Clip must be at most {MAX_SECONDS:.0f} seconds long.")
 
+    (run_dir / "clip.json").write_text(json.dumps({"goal": goal}), encoding="utf-8")
     status = _read_json(run_dir / "status.json")
     if not (status and status.get("ok") and status["steps"][-1]["status"] == "done"):
         _start(clip_id)
