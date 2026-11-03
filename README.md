@@ -154,6 +154,8 @@ No television broadcast or other copyrighted match footage is used anywhere in t
 | SAM output parsing | Meta's `meta-sam-parser` (PyPI) | its own licence | Decodes SAM 3.1's streamed boxes and masks. |
 | Python libraries | OpenCV, NumPy, SciPy, Matplotlib, FastAPI, Pillow, imageio-ffmpeg, Playwright (see `requirements.txt`) | their own open-source licences | Geometry, the web app and the demo video. |
 
+The code in this repository is under the **MIT licence** (see `LICENSE`). Frames from SoccerTrack v2 in `docs/images` and the demo stay under CC BY 4.0.
+
 The video clips, dataset files and analysis runs are not in this repository (`clips/`, `data/` and `runs/` are git-ignored). To reproduce, download SoccerTrack v2 from Hugging Face under its licence.
 
 ## Repository
