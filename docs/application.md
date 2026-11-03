@@ -14,3 +14,7 @@ The pipeline uses only the Meta Model API. I will not train or fine-tune any mod
 Scope for ten days: one continuous wide-angle shot, up to twenty seconds, moves that end in or near the penalty area. I will measure the reconstructed positions against a public research dataset of hand-annotated broadcast clips and report the error in metres.
 
 Success means a judge uploads a goal and reads an explanation that points to things they had not noticed, and every one of them is visible in the clip.
+
+---
+
+**Planned vs delivered.** Delivered: everything in steps 1–5, plus measured "why" facts (numbers around the ball, back-line gaps), a second Muse Spark pass that strikes unsupported wording, questions answered from evidence, and clips without a goal. Different from the plan: tested on SoccerTrack v2 panoramas and a phone video from the stands, not on television broadcasts; accuracy was measured against hand-marked points on those (see README, Measured results).
