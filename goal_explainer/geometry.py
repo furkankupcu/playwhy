@@ -189,6 +189,9 @@ def pixel_to_pitch(px: tuple[float, float], H: np.ndarray) -> tuple[float, float
 # Position building & smoothing
 # ---------------------------------------------------------------------------
 
+_BALL_OUT_M = 1.0   # a ball further off the pitch than this is not in play
+_STILL_M = 0.5      # moved less than this in a second: still
+_ALONE_M = 4.0      # ... and no player this close: a lost track, not a dead ball
 _KEEPER_ZONE_M = 25.0  # a keeper's median spot is this close to a goal line
 
 
@@ -333,6 +336,36 @@ def smooth_positions(
 
 _TOUCH_M = 1.5        # ball this close to a player's feet is on the ground
 _MAX_FLIGHT_S = 4.0   # longer gaps between touches are left as measured
+
+
+def drop_stale_ball(ball: list[PlayerPosition], players: list[PlayerPosition], fps: float = 25.0) -> list[PlayerPosition]:
+    """Drop "ball" positions that cannot be the ball in play.
+
+    When SAM 3.1 loses the ball (a cross into a crowded box) it can lock onto a still white
+    object off the pitch and stay there to the end of the clip. A ball off the pitch, or one that
+    sits still for a second with no player near it, is not tracked any more: showing no ball is
+    better than showing a wrong one.
+    """
+    from collections import defaultdict
+
+    feet: dict[int, list[PlayerPosition]] = defaultdict(list)
+    for p in players:
+        feet[p.frame_idx].append(p)
+    ball = sorted(ball, key=lambda b: b.frame_idx)
+    on_pitch = [b for b in ball if -_BALL_OUT_M <= b.x_m <= _PITCH_LENGTH + _BALL_OUT_M
+                and -_BALL_OUT_M <= b.y_m <= _PITCH_WIDTH + _BALL_OUT_M]
+    window = max(2, int(fps))
+    stale: set[int] = set()
+    for i in range(len(on_pitch) - window + 1):
+        run = on_pitch[i:i + window]
+        if run[-1].frame_idx - run[0].frame_idx > 2 * window:
+            continue  # a gap, not a still ball
+        still = max(math.hypot(b.x_m - run[0].x_m, b.y_m - run[0].y_m) for b in run) < _STILL_M
+        alone = all(min((math.hypot(p.x_m - b.x_m, p.y_m - b.y_m) for p in feet[b.frame_idx]), default=99) > _ALONE_M
+                    for b in run)
+        if still and alone:
+            stale.update(b.frame_idx for b in run)
+    return [b for b in on_pitch if b.frame_idx not in stale]
 
 
 def ground_ball_track(ball: list[PlayerPosition], players: list[PlayerPosition]) -> None:
@@ -975,8 +1008,9 @@ def run(clip_id: str) -> Path:
     positions = smooth_positions(raw_positions)
 
     # Separate ball positions
-    ball_positions = [p for p in positions if p.team == "ball"]
     player_positions = [p for p in positions if p.team != "ball"]
+    ball_positions = drop_stale_ball([p for p in positions if p.team == "ball"], player_positions)
+    positions = player_positions + ball_positions
     ground_ball_track(ball_positions, player_positions)
 
     # Tactical analysis

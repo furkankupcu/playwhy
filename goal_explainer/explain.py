@@ -586,7 +586,8 @@ def answer_question(clip_id: str, question: str) -> dict[str, Any]:
         _ANSWER_SCHEMA,
     )
     valid, times = _collect_valid_ids(events, cues), _evidence_times(events, cues)
-    evidence = [{"id": str(e["id"]), "description": name_ids(e["description"], names), "t": times.get(str(e["id"]))}
+    facts = {w["event_id"]: w["description"] for w in events.get("why", [])}
+    evidence = [{"id": str(e["id"]), "description": name_ids(facts.get(str(e["id"]), e["description"]), names), "t": times.get(str(e["id"]))}
                 for e in reply.get("evidence", []) if str(e["id"]) in valid]
     if not reply.get("can_answer"):
         return {"can_answer": False, "answer": name_ids(reply.get("answer") or _NO_ANSWER, names), "evidence": []}
@@ -675,7 +676,13 @@ def run(video_path: Path, clip_id: str) -> Path:
     for claim in explanation["claims"]:
         for ev in claim["evidence"]:
             ev["t"] = times.get(str(ev["id"]))  # lets the UI jump to the evidence
-            ev["description"] = name_ids(ev.get("description", ""), names)
+            # a measured fact is shown as measured, not as the model's paraphrase of it
+            src, eid = sources.get(str(ev["id"]), {}), str(ev["id"])
+            own = src.get("description") if eid.startswith("why_") else (
+                " · ".join(x for x in (src.get("orientation"), src.get("gaze"),
+                                       f"{src['reaction_delay']} reaction" if src.get("reaction_delay") not in (None, "", "unknown") else "") if x)
+                if eid.startswith("cue_") else None)
+            ev["description"] = name_ids(own or ev.get("description", ""), names)
 
     logger.info(
         "Explanation has %d valid claims after validation",

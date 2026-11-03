@@ -220,3 +220,17 @@ def test_keeper_belongs_to_the_team_defending_his_goal():
     assign_keepers(ps, {7}, "A", "right")  # A attacks the goal at x = 105, so its keeper is B's
     assert {p.team for p in ps} == {"B"}
 
+
+def test_ball_stuck_off_pitch_or_alone_is_dropped():
+    from goal_explainer.geometry import PlayerPosition, drop_stale_ball
+    moving = [PlayerPosition(i, i / 25, 0, "ball", 50 + i * 0.5, 30) for i in range(30)]
+    stuck = [PlayerPosition(30 + i, (30 + i) / 25, 0, "ball", 88, 60) for i in range(40)]
+    off = [PlayerPosition(70 + i, (70 + i) / 25, 0, "ball", 88, 70) for i in range(10)]
+    player = [PlayerPosition(i, i / 25, 7, "A", 50 + i * 0.5, 31) for i in range(30)]
+    kept = drop_stale_ball(moving + stuck + off, player)
+    assert [b.frame_idx for b in kept] == list(range(30))
+    # a still ball at a player's feet (a free kick) stays
+    dead = [PlayerPosition(i, i / 25, 0, "ball", 88, 60) for i in range(40)]
+    taker = [PlayerPosition(i, i / 25, 7, "A", 88, 61) for i in range(40)]
+    assert len(drop_stale_ball(dead, taker)) == 40
+

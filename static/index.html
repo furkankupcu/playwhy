@@ -70,8 +70,24 @@ main { max-width: 1360px; margin: 0 auto; padding: 24px 16px; }
 .step[data-s="running"] .dot { border-color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 .step[data-s="failed"] .dot { background: var(--err-line); border-color: var(--err-line); color: var(--err); }
 .step[data-s="pending"], .step[data-s="skipped"] { color: var(--muted); }
+.step[data-s="running"] { color: var(--text); }
+.spinner { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--line-2); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.bar { height: 8px; border-radius: 999px; background: var(--sunk); border: 1px solid var(--line); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #FFD27A); transition: width .6s ease; }
+.progress-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.progress-head h2 { margin: 0; font-size: 20px; }
+.step-what { font-size: 13px; color: var(--muted); }
+.ev.ev-good { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok); }
+.ev.ev-good b { color: var(--ok); }
+.ev.ev-bad { background: var(--err-bg); border-color: var(--err-line); color: var(--err); }
+.ev.ev-bad b { color: var(--err); }
+.good { color: var(--ok); } .bad { color: var(--err); }
+#struck-list s { color: var(--err); text-decoration-color: var(--err); }
+.answer-ok { border-left: 3px solid var(--ok-line); padding-left: 10px; }
+.answer-no { border-left: 3px solid var(--err-line); padding-left: 10px; color: var(--err); }
 @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(242,179,61,.25); } }
-@media (prefers-reduced-motion: reduce) { .step[data-s="running"] .dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .step[data-s="running"] .dot, .spinner { animation: none; } .bar > i { transition: none; } }
 
 /* Calibrate */
 .cal-grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
@@ -164,6 +180,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
       <label><input type="radio" name="goal" value="yes"> Yes</label>
       <label><input type="radio" name="goal" value="no"> No, explain the move</label>
     </fieldset>
+    <div id="upload-progress" class="bar" hidden><i id="upload-bar"></i></div>
     <p id="upload-msg" class="notice notice-err" role="alert" hidden></p>
   </div>
   <section class="panel how" aria-label="How it works">
@@ -181,11 +198,16 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
 <!-- Progress -->
 <main id="view-progress" hidden>
   <section class="panel progress" aria-label="Analysis progress" aria-live="polite">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
-      <span class="label">Analysing</span>
+    <div class="progress-head">
+      <span id="progress-spin" class="spinner" aria-hidden="true"></span>
+      <div style="display:flex;flex-direction:column;flex:1">
+        <h2 id="progress-title">Analysing the clip…</h2>
+        <span id="progress-sub" class="muted" style="font-size:14px"></span>
+      </div>
       <span id="progress-id" class="mono muted" style="font-size:12px"></span>
     </div>
-    <div id="steps"></div>
+    <div class="bar" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100"><i id="progress-bar"></i></div>
+    <div id="steps" style="margin-top:8px"></div>
     <p id="progress-msg" class="notice notice-err" hidden></p>
     <p id="progress-cal" class="notice notice-warn" hidden>Couldn't lock the pitch lines automatically. <a id="progress-cal-link" href="#">Set 4 points by hand</a></p>
   </section>
@@ -344,6 +366,11 @@ const STEP_LABELS = {
   track: "Track players and ball", calibrate: "Map camera to pitch", geometry: "Find passes, offside line, shot",
   read: "Read body cues of key players", explain: "Write the explanation", graphs: "Build player graphs",
 };
+const STEP_WHAT = {
+  track: "SAM 3.1 follows every player, both keepers and the ball", calibrate: "SAM 3.1 finds the pitch lines; frames map to metres",
+  geometry: "Possession, passes, offside line, who lost their man", read: "Muse Spark watches the clip and reads key players' body language",
+  explain: "Muse Spark writes from measured facts; code and a second pass check it", graphs: "Marking and team shape for every frame",
+};
 const VIEWS = ["upload", "progress", "calibrate", "result"];
 let pollTimer = null;
 
@@ -405,8 +432,22 @@ async function upload(file) {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("goal", document.querySelector('input[name="goal"]:checked').value);
+  $("upload-progress").hidden = false;
   try {
-    const { clip_id } = await api("/api/clips", { method: "POST", body: fd });
+    // XHR, not fetch: only XHR reports upload progress
+    const { clip_id } = await new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open("POST", "/api/clips");
+      x.upload.onprogress = (e) => { if (e.lengthComputable) {
+        const p = Math.round(100 * e.loaded / e.total);
+        $("upload-bar").style.width = `${p}%`;
+        drop.querySelector("span").textContent = p < 100 ? `Uploading ${file.name}… ${p}%` : "Checking the video…";
+      } };
+      x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (_) {}
+        x.status < 300 ? resolve(j) : reject(new Error(j.detail || `Upload failed (${x.status})`)); };
+      x.onerror = () => reject(new Error("Upload failed. Check the connection and try again."));
+      x.send(fd);
+    });
     location.hash = `#/clip/${clip_id}`;
   } catch (err) {
     msg.textContent = err.message;
@@ -414,6 +455,7 @@ async function upload(file) {
   } finally {
     drop.querySelector("span").textContent = "Drop an .mp4 here, or choose a file";
     $("file").value = "";
+    $("upload-progress").hidden = true; $("upload-bar").style.width = "0";
   }
 }
 
@@ -430,13 +472,22 @@ async function openProgress(id) {
   if (finished && !st.running && st.steps.some((s) => s.name === "explain" && s.status !== "pending")) { openResult(id); return; }
 
   $("steps").replaceChildren(...st.steps.map((s) => el("div", { class: "step", "data-s": s.status },
-    el("span", { class: "dot", "aria-hidden": "true", text: s.status === "done" ? "✓" : s.status === "failed" ? "!" : "" }),
+    el("span", { class: "dot", "aria-hidden": "true", text: s.status === "done" || s.status === "skipped" ? "✓" : s.status === "failed" ? "!" : "" }),
     el("span", { style: "display:flex;flex-direction:column" },
       el("span", { style: "font-weight:600", text: STEP_LABELS[s.name] || s.name }),
-      el("span", { class: "muted", style: "font-size:13px", text: s.status === "done" ? `${s.elapsed_s}s` : s.status }),
+      el("span", { class: "step-what", text: s.status === "done" ? `Done in ${Math.round(s.elapsed_s)} s` : s.status === "running" ? `${STEP_WHAT[s.name] || ""}…` : s.status === "skipped" ? "Already done" : STEP_WHAT[s.name] || s.status }),
     ),
   )));
   const failed = !st.ok && !st.running;
+  const done = st.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
+  const running = st.steps.findIndex((s) => s.status === "running");
+  const pctDone = Math.round(100 * (done + (running >= 0 ? 0.5 : 0)) / Math.max(1, st.steps.length));
+  $("progress-bar").style.width = `${pctDone}%`;
+  $("progress-bar").parentElement.setAttribute("aria-valuenow", String(pctDone));
+  $("progress-spin").hidden = failed;
+  $("progress-title").textContent = failed ? "The analysis stopped" : running >= 0 ? `${STEP_LABELS[st.steps[running].name]}…` : "Starting the analysis…";
+  const spent = st.steps.reduce((a, s) => a + (s.elapsed_s || 0), 0);
+  $("progress-sub").textContent = failed ? "" : `Step ${Math.min(st.steps.length, done + 1)} of ${st.steps.length} · ${pctDone}% · ${Math.floor(spent / 60)} min ${Math.round(spent % 60)} s so far · about 10 min for a 20 s clip`;
   $("progress-msg").hidden = !failed;
   if (failed) {
     const step = st.steps.find((s) => s.status === "failed");
@@ -625,6 +676,20 @@ function evLabel(ev) {
   return "Event";
 }
 
+// From the attacking side: more attackers than defenders is good, fewer is bad.
+function tone(ev) {
+  const id = String(ev.id), d = ev.description || "";
+  if (id.startsWith("why_")) {
+    let net = 0;
+    for (const m of d.matchAll(/(\d+) attackers? v (\d+) defenders?/g)) net += Number(m[1]) - Number(m[2]);
+    const gap = d.match(/back line (\d+) m .*?typical in this clip (\d+) m/);
+    if (gap) net += Math.sign(Number(gap[1]) - Number(gap[2]));
+    return net > 0 ? "ev-good" : net < 0 ? "ev-bad" : "";
+  }
+  if (id.startsWith("cue_")) return /slow/.test(d) ? "ev-bad" : /quick/.test(d) ? "ev-good" : "";
+  return "";
+}
+
 function renderClaims() {
   const claims = R.data.explanation.claims || [];
   if (!claims.length) {
@@ -639,7 +704,7 @@ function renderClaims() {
         el("span", { class: "txt", text: c.text }),
       ),
       el("div", { class: "evidence" }, ...(c.evidence || []).map((ev) =>
-        el("button", { class: "ev", title: ev.t != null ? `Jump to ${fmt(ev.t)}` : "", onclick: () => { selectClaim(i, false); if (ev.t != null) seek(ev.t); } },
+        el("button", { class: `ev ${tone(ev)}`, title: ev.t != null ? `Jump to ${fmt(ev.t)}` : "", onclick: () => { selectClaim(i, false); if (ev.t != null) seek(ev.t); } },
           el("b", { text: `${evLabel(ev)}: ` }), ev.description || String(ev.id)),
       )),
     ),
@@ -666,12 +731,13 @@ function renderCues() {
   if (!cues.length) { $("cues").replaceChildren(el("span", { class: "muted", style: "font-size:13px", text: "No body-cue evidence for this claim." })); return; }
   $("cues").replaceChildren(...cues.map((q) => {
     const flags = [q.arm_raised && "arm raised", q.slip && "slipped", q.reaction_delay && q.reaction_delay !== "unknown" && `${q.reaction_delay} reaction`].filter(Boolean);
+    const react = q.reaction_delay === "slow" ? "bad" : q.reaction_delay === "quick" ? "good" : "";
     return el("div", { class: "cue" },
       el("img", { src: `/api/clips/${d.clip_id}/crops/${q.cue_id}.jpg`, alt: `Crop of player ${q.player_id}` }),
       el("div", {},
         el("strong", { text: nameOf(q.player_id) }),
         el("span", { text: `${q.orientation} · ${q.gaze}` }),
-        el("span", { text: flags.join(" · ") }),
+        el("span", { class: react, text: flags.join(" · ") }),
         el("span", { class: "mono", style: "font-size:12px;color:var(--muted)", text: `conf ${Number(q.confidence).toFixed(2)}` }),
       ),
     );
@@ -732,8 +798,8 @@ async function askClip(e) {
   box.hidden = false; box.replaceChildren(el("span", { class: "muted", text: "Muse Spark is checking the data…" }));
   try {
     const r = await api(`/api/clips/${R.data.clip_id}/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
-    box.replaceChildren(el("p", { style: "margin:0", text: r.answer }), el("div", { class: "evidence" }, ...r.evidence.map((ev) =>
-      el("button", { class: "ev", title: ev.t != null ? `Jump to ${fmt(ev.t)}` : "", onclick: () => { if (ev.t != null) seek(ev.t); } },
+    box.replaceChildren(el("p", { class: r.can_answer ? "answer-ok" : "answer-no", style: "margin:0", text: r.answer }), el("div", { class: "evidence" }, ...r.evidence.map((ev) =>
+      el("button", { class: `ev ${tone(ev)}`, title: ev.t != null ? `Jump to ${fmt(ev.t)}` : "", onclick: () => { if (ev.t != null) seek(ev.t); } },
         el("b", { text: `${evLabel(ev)}: ` }), ev.description))));
   } catch (err) { box.replaceChildren(el("span", { class: "notice notice-err", text: err.message })); }
   $("ask-send").disabled = false;

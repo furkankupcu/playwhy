@@ -12,3 +12,5 @@ demo/*.mp4
 demo/*.wav
 demo/raw/
 demo/marks.json
+demo/stills/
+demo/segments/
