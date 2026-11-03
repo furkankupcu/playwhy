@@ -1,0 +1,15 @@
+{
+  "title": "Goal Explainer. One video of a goal goes in. Out comes why it happened, with every claim tied to something you can see.",
+  "clip": "Pro clubs explain goals with multi-camera tracking. Most coaches have one camera. This goal is from a university match, filmed by a single panoramic camera.",
+  "result": "This is the result. It runs only on Meta's models. SAM 3.1 tracks every player and the ball, and maps them to pitch metres. Muse Spark reads what positions cannot show, and writes the explanation.",
+  "why": "The why is measured, not guessed. At each pass, code counts attackers against defenders around the ball, and compares the widest gap in the back line with its usual width. A claim may only use those numbers.",
+  "cue": "Where a player is facing cannot be measured from positions. Muse Spark reads it from a crop of the player, with a confidence.",
+  "struck": "A first draft always says too much. A second Muse Spark pass strikes every phrase the data does not support, and code drops any claim whose numbers are not in its evidence. You can see what was removed.",
+  "ask": "You can ask about the goal. An answer must cite evidence, or it says the data cannot tell.",
+  "marking": "Live, who is marking whom. Green is tight, yellow loose, red free. And where each team played.",
+  "commentary": "Muse Spark also writes one commentator line per moment, read out by the browser.",
+  "cast": "Blue separate early from their markers!",
+  "results": "We test ourselves on three goals from three matches. It is strongest when players are big enough in the frame. On wide panoramas it misses passes, and the page says so.",
+  "phone": "No goal in this phone video from the stands, yet it still explains the move from positions and distances. Here calibration is within about one and a half metres of hand-marked points.",
+  "end": "Goal Explainer. Built on SAM 3.1 and Muse Spark. The code is on GitHub."
+}

@@ -8,4 +8,7 @@ __pycache__/
 .claude/
 clips/
 data/
-demo/
+demo/*.mp4
+demo/*.wav
+demo/raw/
+demo/marks.json
