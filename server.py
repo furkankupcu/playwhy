@@ -1,5 +1,5 @@
 """
-FastAPI web app for Goal Explainer.
+FastAPI web app for PlayWhy.
 
 Run from the repo root (the pipeline writes to ``./runs``):
 
@@ -26,11 +26,11 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from eval.calib_eval import ground_error_m
-from goal_explainer.calibrate import _keeps_orientation
-from goal_explainer.explain import answer_question
-from goal_explainer.pipeline import STEPS, run_pipeline
-from goal_explainer.pitch import PITCH_KEYPOINTS
-from goal_explainer.track import video_info
+from playwhy.calibrate import _keeps_orientation
+from playwhy.explain import answer_question
+from playwhy.pipeline import STEPS, run_pipeline
+from playwhy.pitch import PITCH_KEYPOINTS
+from playwhy.track import video_info
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ MAX_SECONDS = 25.0  # scope is ≤20 s clips; a little slack for trimming
 _CLIP_ID = re.compile(r"^[0-9a-f]{16}$")
 _CUE_ID = re.compile(r"^cue_[0-9-]+_moment_[0-9]+$")
 
-app = FastAPI(title="Goal Explainer")
+app = FastAPI(title="PlayWhy")
 _running: set[str] = set()
 _lock = threading.Lock()
 
@@ -246,7 +246,7 @@ def graph_video(clip_id: str) -> FileResponse:
     path = _run_dir(clip_id) / "graphs.mp4"
     if not path.is_file():
         raise HTTPException(404, "No graph video for this clip")
-    return FileResponse(path, media_type="video/mp4", filename=f"goal-explainer-{clip_id}.mp4")
+    return FileResponse(path, media_type="video/mp4", filename=f"playwhy-{clip_id}.mp4")
 
 
 @app.get("/api/clips/{clip_id}/frame0.jpg")

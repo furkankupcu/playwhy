@@ -101,7 +101,7 @@ def main() -> None:
     parts = [segment(i, *scene) for i, scene in enumerate(SCENES)]
     lst = SEG / "list.txt"
     lst.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
-    out = HERE / "goal-explainer-demo.mp4"
+    out = HERE / "playwhy-demo.mp4"
     subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
                     "-c", "copy", "-movflags", "+faststart", str(out)], check=True)
     print("wrote", out, f"{sum(s[1] for s in SCENES):.1f} s")

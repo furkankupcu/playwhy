@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from goal_explainer.geometry import (
+from playwhy.geometry import (
     PlayerPosition,
     PossessionEvent,
     PassEvent,
@@ -166,7 +166,7 @@ def test_open_lanes():
 
 
 def test_build_positions_drops_people_off_the_pitch():
-    from goal_explainer.geometry import build_positions
+    from playwhy.geometry import build_positions
     H = np.eye(3)  # 1 px = 1 m
     tracks = [{"frame_idx": 0, "timestamp": 0.0, "objects": [
         {"object_id": 1, "cls": "player", "team": "A", "foot_xy": [50, 30]},
@@ -178,7 +178,7 @@ def test_build_positions_drops_people_off_the_pitch():
 
 
 def test_build_positions_keeps_one_keeper_per_team():
-    from goal_explainer.geometry import build_positions
+    from playwhy.geometry import build_positions
     H = np.eye(3)  # 1 px = 1 m
     keeper = {"object_id": 4000, "cls": "goalkeeper", "team": "B", "foot_xy": [70, 33]}
     sub = {"object_id": 4001, "cls": "goalkeeper", "team": "B", "foot_xy": [8, -1]}  # warming up, 1 m outside
@@ -188,7 +188,7 @@ def test_build_positions_keeps_one_keeper_per_team():
 
 
 def test_ground_ball_track_straightens_flight_between_touches():
-    from goal_explainer.geometry import PlayerPosition, ground_ball_track
+    from playwhy.geometry import PlayerPosition, ground_ball_track
     fps = 10
     players, ball = [], []
     for i in range(11):
@@ -204,7 +204,7 @@ def test_ground_ball_track_straightens_flight_between_touches():
 
 
 def test_key_moments_are_capped_to_the_attack():
-    from goal_explainer.geometry import KeyMoment, PassEvent
+    from playwhy.geometry import KeyMoment, PassEvent
     passes = [PassEvent(0, 100, 4.0, 1, 2, "A", (0, 0), (5, 0), True)]
     lost = [KeyMoment(0, f, f / 25, "lost_man", [pid, 9], "") for f, pid in
             [(10, 1), (20, 2), (30, 3), (40, 4), (50, 5), (60, 77), (200, 1)]]  # 77: defender; 200: after the pass
@@ -215,14 +215,14 @@ def test_key_moments_are_capped_to_the_attack():
 
 
 def test_keeper_belongs_to_the_team_defending_his_goal():
-    from goal_explainer.geometry import PlayerPosition, assign_keepers
+    from playwhy.geometry import PlayerPosition, assign_keepers
     ps = [PlayerPosition(i, i / 25, 7, "A", 101.0, 34.0) for i in range(5)]
     assign_keepers(ps, {7}, "A", "right")  # A attacks the goal at x = 105, so its keeper is B's
     assert {p.team for p in ps} == {"B"}
 
 
 def test_ball_stuck_off_pitch_or_alone_is_dropped():
-    from goal_explainer.geometry import PlayerPosition, drop_stale_ball
+    from playwhy.geometry import PlayerPosition, drop_stale_ball
     moving = [PlayerPosition(i, i / 25, 0, "ball", 50 + i * 0.5, 30) for i in range(30)]
     stuck = [PlayerPosition(30 + i, (30 + i) / 25, 0, "ball", 88, 60) for i in range(40)]
     off = [PlayerPosition(70 + i, (70 + i) / 25, 0, "ball", 88, 70) for i in range(10)]

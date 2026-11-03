@@ -6,7 +6,7 @@ Voice-over lines are suggestions; keep them short.
 
 | Time | Screen | Say |
 |---|---|---|
-| 0:00 | The goal clip playing full screen, no UI | "Pro clubs explain goals with multi-camera tracking. Everyone else has one video. Goal Explainer turns that video into an analyst's explanation." |
+| 0:00 | The goal clip playing full screen, no UI | "Pro clubs explain goals with multi-camera tracking. Everyone else has one video. PlayWhy turns that video into an analyst's explanation." |
 | 0:12 | Upload page, then the progress list ticking through the 6 steps (speed it up) | "It uses only Meta's models: SAM 3.1 to track every player and map the pitch, Muse Spark to read what positions can't show, and to write." |
 | 0:30 | Result page. Read the summary out loud | "Here is why this goal happened, in numbers: who was outnumbered, where the back line opened." |
 | 0:45 | Click a claim that cites a **Measured** fact. Video and top-down view jump; point at the fact | "Every reason is measured, not guessed: attackers against defenders around the ball, the widest gap in the back line against its usual width." |
@@ -17,6 +17,6 @@ Voice-over lines are suggestions; keep them short.
 | 1:55 | Click **Play commentary** for one claim | "And a commentator line for each moment, written by Muse Spark." |
 | 2:05 | README "Measured results": the three goal clips | "We test ourselves: three goals from three matches, with what works and what doesn't." |
 | 2:15 | The phone clip from the stands with players boxed (10 + 10 + keepers) | "It works on a phone video filmed from the stands, too." |
-| 2:25 | Title card: Goal Explainer · SAM 3.1 + Muse Spark · repo link | "Goal Explainer: for everyone who only has one camera." |
+| 2:25 | Title card: PlayWhy · SAM 3.1 + Muse Spark · repo link | "PlayWhy: for everyone who only has one camera." |
 
 Credits line at the end: *Goal clip: SoccerTrack v2 (CC BY 4.0), match 117093.*

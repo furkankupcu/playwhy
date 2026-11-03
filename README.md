@@ -1,6 +1,8 @@
-# Goal Explainer
+# PlayWhy
 
-**Upload a short video of a football goal. Read why it happened: who opened the space, who lost their man, and how — with every claim tied to a moment you can see in the clip.**
+![PlayWhy: one football clip in, why the move worked out](docs/images/cover.jpg)
+
+**Upload a short video of a football goal, or any attacking move. Read why it worked: who opened the space, who lost their man, and how — with every claim tied to a moment you can see in the clip.**
 
 Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026) on the **Meta Model API only**: SAM 3.1 and Muse Spark. No model is trained or fine-tuned.
 
@@ -8,7 +10,7 @@ Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026) on the
 
 ## Not another sports analyzer
 
-Most "AI sports analyzers" send a clip to one model and print what it says. Goal Explainer does the opposite: **the model is never trusted on its own.**
+Most "AI sports analyzers" send a clip to one model and print what it says. PlayWhy does the opposite: **the model is never trusted on its own.**
 
 - It **measures first**. SAM 3.1 tracks every player, both keepers, the referee and the ball. Each frame is mapped from pixels to pitch metres. Passes, the offside line and the marking at every frame come from geometry, not from a model's opinion.
 - It **reads only where geometry is blind**. Muse Spark looks at crops of the few players who matter at the key moments: body orientation, gaze, a raised arm, a late reaction. Positions alone cannot show these.
@@ -42,7 +44,7 @@ The app also draws **who is marking whom** live over the video and on a top-down
 | ![Analysis in progress](docs/images/progress.jpg) | ![A clip without a goal](docs/images/no-goal-clip.jpg) |
 | **Progress** while SAM 3.1 and Muse Spark work (about 10 min per clip). | **No goal?** The move is explained from positions and distances. |
 
-A 2.5-minute walkthrough: `demo/goal-explainer-demo.mp4` (made by `demo/capture.py` and `demo/compose.py` from the running app).
+A 2.5-minute walkthrough: `demo/playwhy-demo.mp4` (made by `demo/capture.py` and `demo/compose.py` from the running app).
 
 ## How it works
 
@@ -132,8 +134,8 @@ uvicorn server:app --port 8000                       # open http://localhost:800
 Command line, one clip end to end:
 
 ```bash
-python -m goal_explainer.pipeline path/to/clip.mp4 --clip-id my_goal
-python -m goal_explainer.pipeline clip.mp4 --clip-id my_goal --skip-to 4   # resume from a step
+python -m playwhy.pipeline path/to/clip.mp4 --clip-id my_goal
+python -m playwhy.pipeline clip.mp4 --clip-id my_goal --skip-to 4   # resume from a step
 ```
 
 Outputs land in `runs/<clip_id>/`: `tracks.json`, `homography.json`, `pitch.json`, `events.json`, `cues.json`, `explanation.json`, `graphs.json`, `graphs.mp4`. Tests: `python -m pytest`.
@@ -161,7 +163,7 @@ The video clips, dataset files and analysis runs are not in this repository (`cl
 ## Repository
 
 ```
-goal_explainer/   api.py (Meta Model API client + cache) · track.py · calibrate.py · geometry.py
+playwhy/   api.py (Meta Model API client + cache) · track.py · calibrate.py · geometry.py
                   read.py · explain.py · graphs.py · pitch.py · pipeline.py
 server.py         FastAPI app;  static/index.html  the web UI
 eval/             calib_eval.py — calibration error vs hand keypoints

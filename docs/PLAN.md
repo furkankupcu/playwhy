@@ -1,4 +1,4 @@
-# Goal Explainer — Uygulama Planı
+# PlayWhy — Uygulama Planı
 
 Spec: [application.md](application.md). Teslim: **4 Kasım 21:00 ET** (TR 5 Kasım 04:00).
 Kural: yalnızca Meta Model API; hiçbir model eğitilmez veya fine-tune edilmez.
@@ -23,7 +23,7 @@ Her adım çıktısını `runs/<clip_id>/` altına JSON olarak yazar. Böylece h
 ## 2. Repo yapısı
 
 ```
-goal_explainer/
+playwhy/
   api.py         # Meta Model API istemcisi + disk cache
   track.py       # adım 1
   calibrate.py   # adım 2
@@ -32,7 +32,7 @@ goal_explainer/
   read.py        # adım 4
   explain.py     # adım 5
   replay.py      # kuşbakışı replay videosu
-  pipeline.py    # CLI: python -m goal_explainer.pipeline clip.mp4
+  pipeline.py    # CLI: python -m playwhy.pipeline clip.mp4
 app.py           # Gradio arayüzü
 eval/gsr_eval.py # SoccerNet-GSR üzerinde metre hatası
 tests/

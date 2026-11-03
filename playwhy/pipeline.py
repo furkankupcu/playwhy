@@ -1,5 +1,5 @@
 """
-CLI entry point: ``python -m goal_explainer.pipeline clip.mp4``
+CLI entry point: ``python -m playwhy.pipeline clip.mp4``
 
 Runs every analysis step in order. If a step fails the remaining steps are
 skipped (they would read stale or missing files). Progress is written to
@@ -96,8 +96,8 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="goal_explainer.pipeline",
-        description="Run the Goal Explainer analysis pipeline on a football clip.",
+        prog="playwhy.pipeline",
+        description="Run the PlayWhy analysis pipeline on a football clip.",
     )
     parser.add_argument("video", help="Path to the input video file.")
     parser.add_argument("--clip-id", default=None, help="Clip identifier (default: file name stem).")

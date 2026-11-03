@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from goal_explainer.pitch import (
+from playwhy.pitch import (
     KEYPOINTS,
     LINES,
     LENGTH,

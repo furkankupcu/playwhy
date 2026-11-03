@@ -2,7 +2,7 @@
 Generate evidence-based tactical explanations from events and cues.
 Every claim must reference specific evidence from the data.
 
-Step 5 of the Goal Explainer pipeline.
+Step 5 of the PlayWhy pipeline.
 """
 
 from __future__ import annotations

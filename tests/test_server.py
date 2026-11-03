@@ -97,7 +97,7 @@ def test_reference_points_measure_without_touching_analysis(client, tmp_path):
 
 
 def test_ask_refuses_answers_without_real_evidence(client, tmp_path, monkeypatch):
-    from goal_explainer import explain
+    from playwhy import explain
     run = tmp_path / "runs" / "0123456789abcdef"
     run.mkdir(parents=True)
     _clip(run / "input.mp4", 1)

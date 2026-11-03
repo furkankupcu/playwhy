@@ -2,7 +2,7 @@
 
     python demo/record.py          # needs the server on http://localhost:8000
 
-Writes demo/goal-explainer-demo.mp4. Narration WAVs come from demo/tts.ps1.
+Writes demo/playwhy-demo.mp4. Narration WAVs come from demo/tts.ps1.
 """
 import json
 import subprocess
@@ -79,7 +79,7 @@ def main() -> None:
             page.wait_for_function("document.getElementById('video').readyState >= 2", timeout=60000)
 
         # 1 title
-        page.set_content(CARD.format("""<div style="font-size:96px;font-weight:700;letter-spacing:-.02em">Goal Explainer</div>
+        page.set_content(CARD.format("""<div style="font-size:96px;font-weight:700;letter-spacing:-.02em">PlayWhy</div>
           <div style="font-size:40px;color:#B9C5BF">One video of a goal in. <span style="color:#F2B33D">Why it happened</span> out.</div>
           <div style="font-size:26px;color:#9AA8A1;margin-top:20px">Meta Model API only: SAM 3.1 + Muse Spark · no training</div>"""))
         hold(scene("title", extra=1.0))
@@ -163,9 +163,9 @@ def main() -> None:
         hold(end)
 
         # 12 end card
-        page.set_content(CARD.format("""<div style="font-size:88px;font-weight:700">Goal Explainer</div>
+        page.set_content(CARD.format("""<div style="font-size:88px;font-weight:700">PlayWhy</div>
           <div style="font-size:36px;color:#B9C5BF">SAM 3.1 + Muse Spark · Meta Model API</div>
-          <div style="font-size:32px;color:#F2B33D">github.com/furkankupcu/goal-explainer</div>
+          <div style="font-size:32px;color:#F2B33D">github.com/furkankupcu/playwhy</div>
           <div style="font-size:22px;color:#9AA8A1;margin-top:30px">Goal clips: SoccerTrack v2 (CC BY 4.0), matches 117093, 118575, 128058</div>"""))
         hold(scene("end", extra=1.8))
         total = time.monotonic() - t0
@@ -183,7 +183,7 @@ def main() -> None:
         track[i:i + len(a)] = a[:len(track) - i]
     with wave.open(str(HERE / "narration.wav"), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(track.tobytes())
-    out = HERE / "goal-explainer-demo.mp4"
+    out = HERE / "playwhy-demo.mp4"
     subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path),
                     "-i", str(HERE / "narration.wav"), "-map", "0:v", "-map", "1:a", "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-crf", "20",
                     "-preset", "medium", "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-b:a", "160k",

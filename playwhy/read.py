@@ -2,7 +2,7 @@
 Read visual cues (body orientation, gaze, arm position, slips, reactions)
 from key player crops at key moments using Muse Spark.
 
-Step 4 of the Goal Explainer pipeline. Crops are saved to
+Step 4 of the PlayWhy pipeline. Crops are saved to
 ``runs/<clip_id>/crops/cue_<player>_<moment>.jpg`` so the UI can show them.
 """
 

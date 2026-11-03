@@ -1,6 +1,6 @@
 """Tests for step 6: marking and team-shape graphs."""
 
-from goal_explainer.graphs import attacking_team, frame_graph, marking_state
+from playwhy.graphs import attacking_team, frame_graph, marking_state
 
 
 def P(pid, team, x, y):

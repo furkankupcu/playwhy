@@ -124,8 +124,8 @@ def main() -> None:
           display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px">{}</body></html>"""
         td = 'style="padding:9px 24px"'
         cards = {
-            "title": """<div style="font-size:64px;font-weight:700;letter-spacing:-.02em">Goal Explainer</div>
-              <div style="font-size:27px;color:#B9C5BF">One video of a goal in. <span style="color:#F2B33D">Why it happened</span> out.</div>
+            "title": """<div style="font-size:64px;font-weight:700;letter-spacing:-.02em">PlayWhy</div>
+              <div style="font-size:27px;color:#B9C5BF">One football clip in. <span style="color:#F2B33D">Why the move worked</span> out.</div>
               <div style="font-size:18px;color:#9AA8A1;margin-top:14px">Meta Model API only: SAM 3.1 + Muse Spark · no training</div>""",
             "results": f"""<div style="font-size:36px;font-weight:700;margin-bottom:6px">Three goals, three matches</div>
               <table style="font-size:20px;border-collapse:collapse">
@@ -144,9 +144,9 @@ def main() -> None:
               <li>"Usual" gaps learned from many matches, not one clip</li>
               <li>About 4 minutes per clip instead of 10: read cues and write in parallel</li>
               </ul>""",
-            "end": """<div style="font-size:58px;font-weight:700">Goal Explainer</div>
+            "end": """<div style="font-size:58px;font-weight:700">PlayWhy</div>
               <div style="font-size:24px;color:#B9C5BF">SAM 3.1 + Muse Spark · Meta Model API</div>
-              <div style="font-size:22px;color:#F2B33D">github.com/furkankupcu/goal-explainer</div>
+              <div style="font-size:22px;color:#F2B33D">github.com/furkankupcu/playwhy</div>
               <div style="font-size:15px;color:#9AA8A1;margin-top:20px">Goal clips: SoccerTrack v2 (CC BY 4.0), matches 117093, 118575, 128058</div>""",
         }
         for name, html in cards.items():

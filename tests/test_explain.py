@@ -2,7 +2,7 @@
 
 import pytest
 
-from goal_explainer.explain import (
+from playwhy.explain import (
     build_explanation_prompt,
     validate_claim,
     validate_explanation,
@@ -130,7 +130,7 @@ def test_validate_explanation():
 
 
 def test_player_names_use_colour_number_and_role():
-    from goal_explainer.explain import build_explanation_prompt, player_names
+    from playwhy.explain import build_explanation_prompt, player_names
     tracks = {"kits": {"team_a": "white", "team_b": "blue"}, "frames": [{"objects": [
         {"object_id": 1001, "cls": "player", "team": "A"},
         {"object_id": 2003, "cls": "player", "team": "B"},
@@ -149,7 +149,7 @@ def test_player_names_use_colour_number_and_role():
 
 
 def test_pass_facts_and_strong_cues():
-    from goal_explainer.explain import add_pass_facts, strong_cues
+    from playwhy.explain import add_pass_facts, strong_cues
     ev = {"attacking_direction": "right",
           "passes": [{"frame_idx": 5, "start_xy": [80.6, 49.9], "end_xy": [67.8, 46.0]}],
           "key_moments": [{"event_type": "pass", "frame_idx": 5, "description": "Pass from player 1 to 2."}]}
@@ -161,7 +161,7 @@ def test_pass_facts_and_strong_cues():
 
 
 def test_pass_facts_measure_receiver_space():
-    from goal_explainer.explain import add_pass_facts
+    from playwhy.explain import add_pass_facts
     ev = {"attacking_direction": "right",
           "passes": [{"frame_idx": 5, "receiver_id": 2, "start_xy": [60, 30], "end_xy": [70, 30]}]}
     players = [{"player_id": 2, "team": "B", "x_m": 70, "y_m": 30}, {"player_id": 9, "team": "A", "x_m": 73, "y_m": 34},
@@ -172,7 +172,7 @@ def test_pass_facts_measure_receiver_space():
 
 
 def test_audit_edits_words_only():
-    from goal_explainer.explain import audit_explanation
+    from playwhy.explain import audit_explanation
 
     class Client:
         def spark_json(self, prompt, schema):
@@ -190,7 +190,7 @@ def test_audit_edits_words_only():
 
 
 def test_name_ids_hides_internal_ids():
-    from goal_explainer.explain import name_ids
+    from playwhy.explain import name_ids
     names = {2016: "blue player 9", 1004: "white player 4", 2001: "blue player 2"}
     assert name_ids("player 2016 got clear of defender 1004, pass to 2001", names) == \
         "blue player 9 got clear of white player 4, pass to blue player 2"
@@ -198,7 +198,7 @@ def test_name_ids_hides_internal_ids():
 
 
 def test_one_shirt_number_names_one_player():
-    from goal_explainer.explain import player_names
+    from playwhy.explain import player_names
     tracks = {"kits": {"team_a": "blue"}, "frames": [{"objects": [
         {"object_id": 1, "cls": "player", "team": "A"}, {"object_id": 2, "cls": "player", "team": "A"}]}]}
     cue = lambda pid: {"player_id": pid, "jersey_number": "32", "visible": True}  # noqa: E731
@@ -207,7 +207,7 @@ def test_one_shirt_number_names_one_player():
 
 
 def test_why_facts_measure_numbers_and_gaps():
-    from goal_explainer.explain import _collect_valid_ids, add_why_facts
+    from playwhy.explain import _collect_valid_ids, add_why_facts
     def player(pid, team, x, y):
         return {"player_id": pid, "team": team, "x_m": x, "y_m": y, "timestamp": 1.0}
     players = [player(0, "ball", 90, 34), player(1, "A", 92, 34), player(2, "A", 95, 40), player(3, "A", 80, 10),
@@ -226,7 +226,7 @@ def test_why_facts_measure_numbers_and_gaps():
 
 
 def test_claim_numbers_must_come_from_its_evidence():
-    from goal_explainer.explain import unsupported_numbers
+    from playwhy.explain import unsupported_numbers
     sources = {"why_1": {"description": "6 attackers in the final third with no defender within 5 m"},
                "pass_1": {"length_m": 4.8, "receiver_nearest_opponent_m": 5.2}}
     names = {2005: "blue #38", 2001: "blue player 2"}
@@ -238,7 +238,7 @@ def test_claim_numbers_must_come_from_its_evidence():
 
 
 def test_clip_without_goal_is_explained_as_a_move():
-    from goal_explainer.explain import add_why_facts, build_explanation_prompt
+    from playwhy.explain import add_why_facts, build_explanation_prompt
     def player(pid, team, x, y, t):
         return {"player_id": pid, "team": team, "x_m": x, "y_m": y, "timestamp": t}
     frames = [{"frame_idx": i, "players": [player(0, "ball", 80, 34, i / 25), player(1, "A", 81, 34, i / 25),
@@ -250,7 +250,7 @@ def test_clip_without_goal_is_explained_as_a_move():
 
 
 def test_danger_curve_finds_the_turning_point_and_who_could_stop_it():
-    from goal_explainer.explain import add_why_facts, danger_curve
+    from playwhy.explain import add_why_facts, danger_curve
     frames = []
     for i in range(250):  # 10 s at 25 fps; at 5 s two more attackers arrive near the ball
         t = i / 25
@@ -271,6 +271,6 @@ def test_danger_curve_finds_the_turning_point_and_who_could_stop_it():
 
 
 def test_repeated_name_parts_are_merged():
-    from goal_explainer.explain import name_ids
+    from playwhy.explain import name_ids
     assert name_ids("Blue blue player 9 lost white player 4; blue #2 (#2) passed", {}) == "blue player 9 lost white player 4; blue #2 passed"
 

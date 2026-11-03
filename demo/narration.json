@@ -1,5 +1,5 @@
 {
-  "title": "Goal Explainer. One video of a goal goes in. Out comes why it happened, with every claim tied to something you can see.",
+  "title": "PlayWhy. One video of a goal goes in. Out comes why it happened, with every claim tied to something you can see.",
   "clip": "Pro clubs explain goals with multi-camera tracking. Most coaches have one camera. This goal is from a university match, filmed by a single panoramic camera.",
   "result": "This is the result. It runs only on Meta's models. SAM 3.1 tracks every player and the ball, and maps them to pitch metres. Muse Spark reads what positions cannot show, and writes the explanation.",
   "why": "The why is measured, not guessed. At each pass, code counts attackers against defenders around the ball, and compares the widest gap in the back line with its usual width. A claim may only use those numbers.",
@@ -11,5 +11,5 @@
   "cast": "Blue separate early from their markers!",
   "results": "We test ourselves on three goals from three matches. It is strongest when players are big enough in the frame. On wide panoramas it misses passes, and the page says so.",
   "phone": "No goal in this phone video from the stands, yet it still explains the move from positions and distances. Here calibration is within about one and a half metres of hand-marked points.",
-  "end": "Goal Explainer. Built on SAM 3.1 and Muse Spark. The code is on GitHub."
+  "end": "PlayWhy. Built on SAM 3.1 and Muse Spark. The code is on GitHub."
 }

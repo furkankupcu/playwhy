@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from goal_explainer.calibrate import (
+from playwhy.calibrate import (
     manual_calibration,
     REGION_TEMPLATES,
     _render,

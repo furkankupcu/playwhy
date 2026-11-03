@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from goal_explainer import geometry, graphs, explain
+from playwhy import geometry, graphs, explain
 
 
 def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
@@ -95,7 +95,7 @@ def test_data_pipeline_flow(tmp_path: Path, monkeypatch):
 
 
 def test_later_shot_overrules_goal_time_and_after_goal_play_is_dropped():
-    from goal_explainer.read import drop_after_goal, reconcile_goal
+    from playwhy.read import drop_after_goal, reconcile_goal
     pitch = [{"frame_idx": 500, "players": [{"player_id": 7, "team": "A", "timestamp": 20.0, "x_m": 90, "y_m": 30}]},
              {"frame_idx": 540, "players": [{"player_id": 0, "team": "ball", "timestamp": 21.6, "x_m": 104, "y_m": 34}]}]
     events = {"passes": [{"team": "A", "timestamp": 23.5}],
@@ -110,7 +110,7 @@ def test_later_shot_overrules_goal_time_and_after_goal_play_is_dropped():
 
 def test_person_fallback_adds_named_tracks_only_for_a_short_team(monkeypatch, tmp_path):
     import numpy as np
-    from goal_explainer import track
+    from playwhy import track
 
     box = lambda x: [x, 10, x + 10, 40]  # noqa: E731
     frames = [{"frame_idx": i, "timestamp": i / 25, "objects": [

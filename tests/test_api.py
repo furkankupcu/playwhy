@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import pytest
 
-from goal_explainer.api import MetaAPIClient, get_client, SAM_MODEL, SPARK_MODEL
+from playwhy.api import MetaAPIClient, get_client, SAM_MODEL, SPARK_MODEL
 
 
 def test_client_init(tmp_path: Path):
@@ -57,7 +57,7 @@ _SAM_GOALS = (
 
 
 def test_parse_sam_text_and_masks():
-    from goal_explainer.api import mask_to_frame, parse_sam_text
+    from playwhy.api import mask_to_frame, parse_sam_text
     dets = sorted(parse_sam_text(_SAM_GOALS), key=lambda d: d["id"])
     # boxes are half-open: SAM's inclusive x2/y2 + 1
     assert [(d["frame"], d["id"], d["bbox"]) for d in dets] == [
@@ -72,7 +72,7 @@ def test_parse_sam_text_and_masks():
 
 
 def test_load_dotenv(tmp_path, monkeypatch):
-    from goal_explainer.api import load_dotenv
+    from playwhy.api import load_dotenv
     env = tmp_path / ".env"
     env.write_text('# comment\nGE_TEST_KEY="abc"\nGE_TEST_OTHER=x=y\n\nGE_TEST_SET=fromfile\n', encoding="utf-8")
     monkeypatch.delenv("GE_TEST_KEY", raising=False)
@@ -86,7 +86,7 @@ def test_load_dotenv(tmp_path, monkeypatch):
 
 
 def test_build_prompts_skips_unknown_and_shared_colours():
-    from goal_explainer.track import build_prompts
+    from playwhy.track import build_prompts
     kits = {"team_a": "white", "team_b": "black", "goalkeeper_a": "yellow",
             "goalkeeper_b": "white", "referee": "unknown"}
     assert build_prompts(kits) == [
@@ -98,7 +98,7 @@ def test_build_prompts_skips_unknown_and_shared_colours():
 
 
 def test_find_duplicates_and_drop_boxes():
-    from goal_explainer.track import drop_boxes, find_duplicates
+    from playwhy.track import drop_boxes, find_duplicates
     def frame(i, objs):
         return {"frame_idx": i, "timestamp": i / 25, "objects": objs}
     keeper_as_white = {"object_id": 1009, "cls": "player", "bbox": [100, 100, 120, 150]}
@@ -118,7 +118,7 @@ def test_find_duplicates_and_drop_boxes():
 def test_resolve_duplicates_when_one_id_is_in_two_pairs(tmp_path, monkeypatch):
     # 1009 doubles both a keeper (4000) and a black player (2001); resolving the
     # first pair drops 1009 from frames the second pair was found in.
-    from goal_explainer import track
+    from playwhy import track
     def frame(i):
         return {"frame_idx": i, "timestamp": i / 25, "objects": [
             {"object_id": 1009, "cls": "player", "bbox": [100, 100, 120, 150]},
@@ -136,7 +136,7 @@ def test_resolve_duplicates_when_one_id_is_in_two_pairs(tmp_path, monkeypatch):
 
 
 def test_find_goal_validates_spark_answer(tmp_path):
-    from goal_explainer.read import find_goal, players_near_goal
+    from playwhy.read import find_goal, players_near_goal
 
     class Fake:
         def __init__(self, answer): self.answer = answer

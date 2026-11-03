@@ -1,4 +1,4 @@
-# Goal Explainer — hackathon application (as submitted)
+# PlayWhy — hackathon application (as submitted, under the working name "Goal Explainer")
 
 I want to build "Goal Explainer": give it a short television clip of a football goal and it explains why the goal happened, the way a good analyst would, with every claim tied to a moment in the clip.
 
@@ -17,4 +17,4 @@ Success means a judge uploads a goal and reads an explanation that points to thi
 
 ---
 
-**Planned vs delivered.** Delivered: everything in steps 1–5, plus measured "why" facts (numbers around the ball, back-line gaps), a second Muse Spark pass that strikes unsupported wording, questions answered from evidence, and clips without a goal. Different from the plan: tested on SoccerTrack v2 panoramas and a phone video from the stands, not on television broadcasts; accuracy was measured against hand-marked points on those (see README, Measured results).
+**Planned vs delivered.** Delivered: everything in steps 1–5, plus measured "why" facts (numbers around the ball, back-line gaps), a second Muse Spark pass that strikes unsupported wording, questions answered from evidence, and clips without a goal. Different from the plan: tested on SoccerTrack v2 panoramas and a phone video from the stands, not on television broadcasts; accuracy was measured against hand-marked points on those (see README, Measured results). The project was renamed PlayWhy because it also explains moves that end without a goal.

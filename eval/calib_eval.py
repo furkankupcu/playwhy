@@ -38,9 +38,9 @@ def ground_error_m(H: np.ndarray, H_ref: np.ndarray, size: tuple[int, int], top:
 
 
 def main() -> None:
-    from goal_explainer.api import get_client
-    from goal_explainer.calibrate import _CALIB_WIDTH, compute_initial_homography
-    from goal_explainer.track import read_frame
+    from playwhy.api import get_client
+    from playwhy.calibrate import _CALIB_WIDTH, compute_initial_homography
+    from playwhy.track import read_frame
 
     ap = argparse.ArgumentParser(prog="eval.calib_eval", description=__doc__.split("\n\n")[0])
     ap.add_argument("video")

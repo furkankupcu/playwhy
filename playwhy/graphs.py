@@ -211,7 +211,7 @@ def render_video(video_path: Path, clip_id: str, graphs: dict[str, Any], out: Pa
                   (ax2, "Team shape  ·  dashed = an opponent blocks the lane")):
         ax.set_title(t, loc="left", fontsize=11, color=TEXT_2, pad=6, fontweight="semibold")
     fig.text(0.03, 0.955, "Who is marking whom", fontsize=20, fontweight="bold", color=TEXT)
-    fig.text(0.97, 0.955, "Goal Explainer · SAM 3.1 + Muse Spark", fontsize=9, color=MUTED, ha="right")
+    fig.text(0.97, 0.955, "PlayWhy · SAM 3.1 + Muse Spark", fontsize=9, color=MUTED, ha="right")
     subtitle = fig.text(0.03, 0.925, "", fontsize=11.5, color=TEXT_2)
     handles = [Line2D([], [], color=c, ls=ls, lw=2.4, label=lab) for c, ls, lab in STATE_STYLE.values()] + [
         Line2D([], [], marker="o", ls="", ms=9, mfc=TEAM_FILL[dfn], mec=TEAM_RING[dfn], label=f"{shirts[dfn]} (defending)"),
