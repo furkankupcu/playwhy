@@ -83,6 +83,7 @@ main { max-width: 1360px; margin: 0 auto; padding: 24px 16px; }
 .ev.ev-bad { background: var(--err-bg); border-color: var(--err-line); color: var(--err); }
 .ev.ev-bad b { color: var(--err); }
 .good { color: var(--ok); } .bad { color: var(--err); }
+.headline { margin: 0; font-size: 22px; line-height: 1.35; font-weight: 700; color: var(--text); border-left: 4px solid var(--accent); padding: 4px 0 4px 14px; max-width: 60ch; }
 #struck-list s { color: var(--err); text-decoration-color: var(--err); }
 .answer-ok { border-left: 3px solid var(--ok-line); padding-left: 10px; }
 .answer-no { border-left: 3px solid var(--err-line); padding-left: 10px; color: var(--err); }
@@ -311,6 +312,13 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
   <section class="panel timeline" aria-label="Timeline">
     <div class="tl-head"><span>0:00.0</span><span>Passes → shot · click a span to jump</span><span id="tl-end"></span></div>
     <div id="tl" class="tl"><div class="tl-rail"></div><div id="tl-head" class="tl-head-line"></div></div>
+    <div id="danger-wrap" hidden style="margin-top:10px">
+      <div style="display:flex;justify-content:space-between;gap:12px;font-size:13px">
+        <span><b>Attack's edge</b> <span class="muted">· extra attackers near the ball, plus a back-line gap wider than usual</span></span>
+        <button id="turning" class="ev" style="color:var(--accent);border-color:var(--accent)"></button>
+      </div>
+      <svg id="danger" viewBox="0 0 1000 80" preserveAspectRatio="none" role="img" aria-label="The attack's edge over the clip" style="width:100%;height:80px;display:block"></svg>
+    </div>
   </section>
 
   <section class="explain" aria-label="Explanation">
@@ -323,6 +331,7 @@ aside.side { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: colum
           <button id="next" class="btn icon-btn" aria-label="Next claim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
       </div>
+      <p id="headline" class="headline" hidden></p>
       <p id="summary" style="margin:0;color:var(--text-2);max-width:70ch"></p>
       <div id="claims" style="display:flex;flex-direction:column;gap:10px"></div>
       <section class="panel" style="padding:14px;display:flex;flex-direction:column;gap:10px" aria-label="Ask about this goal">
@@ -632,6 +641,8 @@ async function openResult(id) {
   $("recal").href = `#/clip/${id}/calibrate`;
   $("tl-end").textContent = fmt(d.duration);
   $("summary").textContent = d.explanation.summary || "";
+  $("headline").textContent = d.explanation.headline || "";
+  $("headline").hidden = !d.explanation.headline;
   $("explain-title").textContent = (d.events.goals || []).length ? "Why this goal happened" : "What the numbers show";
   // Zoom the top-down view on the attacked half: the action is there, a full pitch shrinks it.
   $("pitch").setAttribute("viewBox", d.events.attacking_direction === "left" ? "-3 -2 60 72" : "48 -2 60 72");
@@ -651,6 +662,7 @@ async function openResult(id) {
   $("ask-answer").hidden = true;
   renderClaims();
   renderTimeline();
+  renderDanger();
   renderCues();
   drawPitch();
 }
@@ -711,6 +723,33 @@ function renderClaims() {
   )));
 }
 
+function renderDanger() {
+  const d = R.data, c = d.graphs && d.graphs.danger, box = $("danger");
+  $("danger-wrap").hidden = !(c && c.t && c.t.length);
+  if ($("danger-wrap").hidden) return;
+  const X = (t) => (1000 * t / d.duration).toFixed(1), top = Math.max(2, ...c.edge.map(Math.abs)), Y = (v) => (40 - 36 * v / top).toFixed(1);
+  const pts = c.t.map((t, i) => `${X(t)},${Y(c.edge[i])}`).join(" ");
+  const first = X(c.t[0]), last = X(c.t[c.t.length - 1]);
+  box.replaceChildren(
+    svg("defs", {}),
+    svg("clipPath", { id: "above" }, ), svg("line", { x1: 0, y1: 40, x2: 1000, y2: 40, stroke: "#3A4A42", "stroke-width": 1 }),
+  );
+  // green where the attack has the edge, red where the defence does
+  for (const [id, y0, y1, col] of [["up", 0, 40, "#0ca30c"], ["down", 40, 80, "#d03b3b"]]) {
+    const cp = svg("clipPath", { id: `clip-${id}` }); cp.append(svg("rect", { x: 0, y: y0, width: 1000, height: y1 - y0 })); box.append(cp);
+    box.append(svg("polygon", { points: `${first},40 ${pts} ${last},40`, fill: col, "fill-opacity": ".35", "clip-path": `url(#clip-${id})` }));
+  }
+  box.append(svg("polyline", { points: pts, fill: "none", stroke: "#E8EDEA", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }));
+  const tp = c.turning;
+  $("turning").hidden = !tp;
+  if (tp) {
+    box.append(svg("line", { x1: X(tp.t), y1: 0, x2: X(tp.t), y2: 80, stroke: "#F2B33D", "stroke-width": 2, "vector-effect": "non-scaling-stroke" }));
+    const s = c.stop;
+    $("turning").textContent = `Turning point ${fmt(tp.t)}` + (s ? ` · ${nameOf(s.def)} needed ${s.need_ms} m/s: ${s.reachable ? "could have stopped it" : "could not get there"}` : "");
+    $("turning").onclick = () => seek(tp.t);  // paused there, the pitch and video show the frozen frame
+  }
+}
+
 function renderTimeline() {
   const d = R.data, tl = $("tl");
   tl.querySelectorAll(".tl-span,.tl-mark").forEach((n) => n.remove());
@@ -752,6 +791,9 @@ function renderStats() {
     [shot ? `${Math.round(shot.angle_deg)}°` : "–", "angle between posts"],
     [e.attacking_direction === "left" ? "← left" : "right →", "attacking direction"],
   ];
+  const c = R.data.graphs && R.data.graphs.danger;
+  if (c && c.turning) items.push([fmt(c.turning.t), "turning point"]);
+  if (c && c.stop) items.push([`${c.stop.need_ms} m/s`, c.stop.reachable ? "defender needed: could have stopped it" : "defender needed: faster than a sprint"]);
   $("stats").replaceChildren(...items.map(([b, s]) => el("div", {}, el("b", { text: b }), el("span", { text: s }))));
 }
 
@@ -946,13 +988,67 @@ function drawPitch() {
     g.append(svg("circle", { cx: p.x_m, cy, r: "1.2", fill, stroke: fill === "#1A1A19" ? "#9AA8A1" : "#0F1412", "stroke-width": ".25" }));
     if (isKey) {
       const nearRight = p.x_m > 90;  // keep labels inside the zoomed view
-      const tx = svg("text", { x: p.x_m + (nearRight ? -2.2 : 2.2), y: cy + .8, fill: "#E8EDEA", "font-size": "2.2", "font-weight": "700",
+      const tx = svg("text", { x: p.x_m + (nearRight ? -3.2 : 3.2), y: cy + .8, fill: "#E8EDEA", "font-size": "2.2", "font-weight": "700",
         "text-anchor": nearRight ? "end" : "start", "paint-order": "stroke", stroke: "#0F1412", "stroke-width": ".5" });
       tx.textContent = nameOf(p.player_id); g.append(tx);
     }
     layer.append(g);
   }
   drawMeasure(players);
+  drawStop(t, players);
+}
+
+// The turning point, drawn like an analyst's freeze frame: the hole in the back line (red), the free
+// attacker's run (green arrow) and what the nearest defender needed to close him down.
+function drawStop(t, players) {
+  const d = R.data, c = d.graphs && d.graphs.danger, s = c && c.stop, tp = c && c.turning;
+  if (!tp || Math.abs(t - tp.t) > 1.5 || !players) return;
+  const at = (id) => players.find((p) => p.player_id === id);
+  const fi = Math.min(R.frames.length - 1, Math.floor(t * d.fps)), H = d.homographies[fi];
+  const over = $("vid-overlay"), vw = over.viewBox.baseVal ? over.viewBox.baseVal.width : 0, sw = vw / 420;
+  const layer = $("layer-measure");
+  const both = (x1, y1, x2, y2, attrs, videoAttrs) => {  // one line on the pitch and the same one on the video
+    layer.append(svg("line", { x1, y1: PY(y1), x2, y2: PY(y2), ...attrs }));
+    if (H && vw) { const [a, b] = project(H, x1, y1), [e, f] = project(H, x2, y2); over.append(svg("line", { x1: a, y1: b, x2: e, y2: f, ...videoAttrs })); }
+  };
+  const notes = [];
+  const label = (x, y, text, col) => notes.push([text, col]);
+  const [g1, g2] = (tp.gap_ids || []).map(at);
+  if (g1 && g2 && tp.gap_m > c.typical_gap_m) {  // a gap no wider than usual is not a hole
+    both(g1.x_m, g1.y_m, g2.x_m, g2.y_m, { stroke: "#d03b3b", "stroke-width": "1.1", "stroke-linecap": "round", "stroke-opacity": ".9" },
+      { stroke: "#d03b3b", "stroke-width": sw * 3, "stroke-linecap": "round", "stroke-opacity": ".9" });
+    label(0, 0, `Back-line gap ${Math.round(tp.gap_m)} m (usual ${Math.round(c.typical_gap_m)} m)`, "#F5B0A8");
+  }
+  if (!s) { callout(notes, layer, over, sw); return; }
+  const a = at(s.att), b = at(s.def);
+  // the run: where the free attacker goes over the next 1.5 s
+  const path = [];
+  for (let k = fi; k <= Math.min(R.frames.length - 1, fi + Math.round(1.5 * d.fps)); k += 3) {
+    const p = (R.frames[k] || []).find((q) => q.player_id === s.att); if (p) path.push(p);
+  }
+  for (let k = 1; k < path.length; k++) both(path[k - 1].x_m, path[k - 1].y_m, path[k].x_m, path[k].y_m,
+    { stroke: "#0ca30c", "stroke-width": ".8", "stroke-linecap": "round" }, { stroke: "#0ca30c", "stroke-width": sw * 2.5, "stroke-linecap": "round" });
+  if (a && b) {
+    const col = s.reachable ? "#F2B33D" : "#0ca30c";
+    both(b.x_m, b.y_m, a.x_m, a.y_m, { stroke: col, "stroke-width": ".6", "stroke-dasharray": "1.2 .8" }, { stroke: col, "stroke-width": sw * 2, "stroke-dasharray": `${sw * 6} ${sw * 4}` });
+    layer.append(svg("circle", { cx: a.x_m, cy: PY(a.y_m), r: "2.6", fill: "none", stroke: "#0ca30c", "stroke-width": ".5" }));
+    label(0, 0, `${nameOf(s.def)}: ${s.need_ms} m/s to reach ${nameOf(s.att)} (${s.reachable ? "possible" : "too far"})`, "#FFFFFF");
+  }
+  callout(notes, layer, over, sw);
+}
+
+// A dark box in the top-left corner of the pitch and of the video, one line per note.
+function callout(notes, layer, over, sw) {
+  if (!notes.length) return;
+  const vb = $("pitch").viewBox.baseVal, x = vb.x + 1.5, y = vb.y + 2.5, fs = 1.8, lh = 2.5;
+  const w = Math.min(vb.width - 3, Math.max(...notes.map(([t]) => t.length)) * fs * 0.56 + 2);
+  layer.append(svg("rect", { x, y, width: w, height: lh * notes.length + 1.4, rx: 1, fill: "#0F1412", "fill-opacity": ".85" }));
+  notes.forEach(([t, col], i) => { const tx = svg("text", { x: x + 1, y: y + 1 + lh * (i + 0.75), fill: col, "font-size": fs, "font-weight": "700" }); tx.textContent = t; layer.append(tx); });
+  if (!sw) return;
+  const vfs = sw * 7.5, vlh = vfs * 1.35, vx = sw * 10, vy = sw * 10;
+  const vw2 = Math.max(...notes.map(([t]) => t.length)) * vfs * 0.56 + sw * 10;
+  over.append(svg("rect", { x: vx, y: vy, width: vw2, height: vlh * notes.length + sw * 6, rx: sw * 3, fill: "#0F1412", "fill-opacity": ".85" }));
+  notes.forEach(([t, col], i) => { const tx = svg("text", { x: vx + sw * 5, y: vy + sw * 3 + vlh * (i + 0.8), fill: col, "font-size": vfs, "font-weight": "700" }); tx.textContent = t; over.append(tx); });
 }
 
 // Marking + team shape, on the pitch and projected onto the video with the frame's homography.
@@ -995,7 +1091,8 @@ function drawGraphs(fi, players) {
       const sw = vw / 420;  // ~same visual weight at any video resolution
       over.append(svg("line", { x1: ax, y1: ay, x2: bx, y2: by, stroke: col, "stroke-width": sw, "stroke-linecap": "round",
         "stroke-dasharray": dash ? dash.split(" ").map((n) => n * sw * 3).join(" ") : "" }));
-      if (m.state === "free") {
+      const dz = d.graphs && d.graphs.danger, nearTurn = dz && dz.turning && Math.abs(fi / d.fps - dz.turning.t) <= 1.5;
+      if (m.state === "free" && !nearTurn) {
         const tx = svg("text", { x: ax, y: ay - sw * 6, fill: "#E8EDEA", "font-size": sw * 7, "text-anchor": "middle",
           "font-family": "Inter Tight, sans-serif", "font-weight": "600", "paint-order": "stroke", stroke: "#0F1412", "stroke-width": sw * 1.5 });
         tx.textContent = `${Math.round(m.d)} m`;

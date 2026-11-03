@@ -177,7 +177,7 @@ def test_audit_edits_words_only():
     class Client:
         def spark_json(self, prompt, schema):
             assert "far post" in prompt
-            return {"summary": "clean", "claims": [
+            return {"headline": "h", "headline_evidence": [], "summary": "clean", "claims": [
                 {"claim_id": 1, "text": "tapped in", "commentary": "tapped in!", "removed": ["at the far post"]},
                 {"claim_id": 99, "text": "made up", "commentary": "made up", "removed": []}]}
 
@@ -247,4 +247,30 @@ def test_clip_without_goal_is_explained_as_a_move():
     add_why_facts(events, frames, set())
     assert [w["moment"] for w in events["why"]] == ["the middle of the clip", "the end of the clip"]
     assert "the clip has no goal" in build_explanation_prompt(events, [])
+
+
+def test_danger_curve_finds_the_turning_point_and_who_could_stop_it():
+    from goal_explainer.explain import add_why_facts, danger_curve
+    frames = []
+    for i in range(250):  # 10 s at 25 fps; at 5 s two more attackers arrive near the ball
+        t = i / 25
+        late = t >= 5
+        ps = [{"player_id": 0, "team": "ball", "x_m": 90, "y_m": 34, "timestamp": t},
+              {"player_id": 1, "team": "A", "x_m": 91, "y_m": 34, "timestamp": t},
+              {"player_id": 2, "team": "A", "x_m": 92 if late else 60, "y_m": 30, "timestamp": t},
+              {"player_id": 3, "team": "A", "x_m": 95 if late else 60, "y_m": 40, "timestamp": t},
+              {"player_id": 11, "team": "B", "x_m": 95, "y_m": 25, "timestamp": t},
+              {"player_id": 12, "team": "B", "x_m": 96, "y_m": 48, "timestamp": t}]
+        frames.append({"frame_idx": i, "players": ps})
+    events = {"attacking_direction": "right", "goals": [{"t_shot": 8.0}], "passes": []}
+    c = danger_curve(events, frames, set())
+    assert 4.5 <= c["turning"]["t"] <= 6.5 and c["turning"]["rise"] >= 1
+    assert c["stop"]["att"] in (1, 2, 3) and c["stop"]["need_ms"] > 0
+    add_why_facts(events, frames, set())
+    assert any(w["moment"] == "the turning point" and "Could it be stopped?" in w["description"] for w in events["why"])
+
+
+def test_repeated_name_parts_are_merged():
+    from goal_explainer.explain import name_ids
+    assert name_ids("Blue blue player 9 lost white player 4; blue #2 (#2) passed", {}) == "blue player 9 lost white player 4; blue #2 passed"
 

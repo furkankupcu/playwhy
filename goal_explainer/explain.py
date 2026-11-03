@@ -56,6 +56,8 @@ class Explanation(TypedDict):
 _EXPLANATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "headline": {"type": "string"},
+        "headline_evidence": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
         "claims": {"type": "array", "items": {
             "type": "object",
@@ -81,7 +83,7 @@ _EXPLANATION_SCHEMA: dict[str, Any] = {
             "additionalProperties": False,
         }},
     },
-    "required": ["summary", "claims"],
+    "required": ["headline", "headline_evidence", "summary", "claims"],
     "additionalProperties": False,
 }
 
@@ -193,7 +195,12 @@ def build_explanation_prompt(
         "Each claim must be a concise, insightful observation about tactics, "
         "positioning, decision-making, or execution.\n\n"
         "For each claim give t_start/t_end (seconds in the clip), the player_ids "
-        "involved and the evidence items it rests on, plus a one-paragraph summary.\n\n"
+        "involved and the evidence items it rests on.\n\n"
+        "Write for a coach, not a statistician. headline: the one main reason, in one sentence of at "
+        "most 20 words, with at most one number (e.g. 'Blue scored through a 15 m hole in the back line "
+        "that opened when #38 lost his marker'); list the why or event ids it rests on in headline_evidence. "
+        "Each claim text: one or two short sentences, at most 30 words and at most one number; the other "
+        "numbers stay in the evidence. summary: at most two sentences.\n\n"
         "RULES:\n"
         "- Do NOT invent events. Every claim must cite at least one evidence "
         "item from the data provided.\n"
@@ -212,6 +219,8 @@ def build_explanation_prompt(
         "claim should say what those numbers made possible, citing the why event: a numerical advantage, "
         "a gap wider than typical, too few defenders goal side, a free attacker. You may use because, so "
         "and left when a why event supports it. Say nothing about advantage when the numbers are level. "
+        "If a why event names the turning point, say when the move turned and whether it could have "
+        "been stopped, as that event says. "
         "Open the summary with the clearest measured finding (an advantage in numbers, or a gap wider "
         "than typical). If no why event shows one, say the numbers were level and name no main reason.\n"
         "- Do not describe speed (sprint, burst), intent or anything else the data does not state.\n"
@@ -229,6 +238,8 @@ def build_explanation_prompt(
 _AUDIT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "headline": {"type": "string"},
+        "headline_evidence": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
         "claims": {"type": "array", "items": {
             "type": "object",
@@ -242,7 +253,7 @@ _AUDIT_SCHEMA: dict[str, Any] = {
             "additionalProperties": False,
         }},
     },
-    "required": ["summary", "claims"],
+    "required": ["headline", "headline_evidence", "summary", "claims"],
     "additionalProperties": False,
 }
 
@@ -251,7 +262,10 @@ def name_ids(text: str, names: dict[int, str]) -> str:
     """Replace internal ids ("player 2016", "defender 1004", "to 2001") with readable names."""
     def swap(m: re.Match[str]) -> str:
         return names.get(int(m.group(1)), m.group(0))
-    return re.sub(r"\b(?:[Pp]layer |[Dd]efender )?(\d{4})\b", swap, text)
+    text = re.sub(r"\b(?:[Pp]layer |[Dd]efender )?(\d{4})\b", swap, text)
+    # "Blue blue player 9", "blue #2 (#2)": the model repeats parts of a name it was given
+    text = re.sub(r"\b(\w+) (\1 (?:player|#|keeper))", r"\2", text, flags=re.IGNORECASE)
+    return re.sub(r"(#\d+) \(\1\)", r"\1", text)
 
 
 def audit_explanation(client: Any, explanation: dict[str, Any], events: dict[str, Any],
@@ -261,7 +275,7 @@ def audit_explanation(client: Any, explanation: dict[str, Any], events: dict[str
     The validator can check ids and times but not prose; flowing text is where details
     like "far post" creep in. Claims keep their ids, times and evidence; the model only edits words.
     """
-    draft = {"summary": explanation.get("summary", ""),
+    draft = {"headline": explanation.get("headline", ""), "summary": explanation.get("summary", ""),
              "claims": [{k: c.get(k) for k in ("claim_id", "text", "commentary")} for c in explanation["claims"]]}
     data = {k: events.get(k, []) for k in ("attacking_direction", "passes", "shots", "goals", "key_moments", "why")}
     audited = client.spark_json(
@@ -278,7 +292,8 @@ def audit_explanation(client: Any, explanation: dict[str, Any], events: dict[str
         _AUDIT_SCHEMA,
     )
     by_id = {c["claim_id"]: c for c in audited.get("claims", [])}
-    out = dict(explanation, summary=audited.get("summary") or explanation.get("summary", ""))
+    out = dict(explanation, summary=audited.get("summary") or explanation.get("summary", ""),
+               headline=audited.get("headline") or explanation.get("headline", ""))
     out["claims"] = [{**c, **{k: by_id[c["claim_id"]][k] for k in ("text", "commentary")}} if c["claim_id"] in by_id else c
                      for c in explanation["claims"]]
     out["audit_removed"] = [r for c in audited.get("claims", []) for r in c.get("removed", [])]
@@ -376,6 +391,86 @@ def _back_gap(defenders: list[dict[str, Any]], goal_x: float) -> tuple[float, in
     return b["y_m"] - a["y_m"], a["player_id"], b["player_id"]
 
 
+_SPRINT_MS = 7.0     # a defender's top sprint; needing more than this means he could not get there
+_REACTION_S = 0.5    # before he starts to move
+_TIGHT_M = 2.0       # close enough to stop the attacker
+_GAP_PER_MAN = 3.0   # metres of extra back-line gap counted as one extra attacker in the danger score
+_STOP_WINDOW_S = 3.0
+_STOP_MIN_S = 1.5
+
+
+def danger_curve(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: set[int]) -> dict[str, Any] | None:
+    """The attack's edge over time, the moment it rose most (the turning point), and whether the
+    nearest defender could still have stopped the free attacker from there.
+
+    Edge = attackers minus defenders within 15 m of the ball, plus the back-line gap beyond its
+    typical width (3 m per man). Sampled every 5 frames, smoothed over a second.
+    """
+    att = attacking_team(pitch)
+    if att is None:
+        return None
+    goal_x = 0.0 if events.get("attacking_direction") == "left" else 105.0
+    frames = sorted(pitch, key=lambda f: f["frame_idx"])
+
+    def split(players):
+        out = [p for p in players if p["team"] in ("A", "B") and p["player_id"] not in keepers]
+        return [p for p in out if p["team"] == att], [p for p in out if p["team"] != att]
+
+    gaps = [g[0] for f in frames[::25] if (g := _back_gap(split(f["players"])[1], goal_x))]
+    typical = float(np.median(gaps)) if gaps else 0.0
+    rows = []
+    for f in frames[::5]:
+        ball = next((p for p in f["players"] if p["team"] == "ball"), None)
+        if not ball or not f["players"]:
+            continue
+        ours, theirs = split(f["players"])
+        near = lambda ps: sum(np.hypot(p["x_m"] - ball["x_m"], p["y_m"] - ball["y_m"]) <= _NEAR_BALL_M for p in ps)  # noqa: E731
+        gap = _back_gap(theirs, goal_x)
+        excess = max(0.0, gap[0] - typical) if gap else 0.0
+        rows.append((f["frame_idx"], f["players"][0]["timestamp"], near(ours) - near(theirs), excess))
+    if len(rows) < 10:
+        return None
+    score = np.array([e + x / _GAP_PER_MAN for _, _, e, x in rows], float)
+    smooth = np.convolve(score, np.ones(5) / 5, mode="same")
+    times = np.array([r[1] for r in rows])
+    goal = (events.get("goals") or [{}])[0]
+    end_t = goal.get("t_shot") if goal.get("t_shot") is not None else float(times[-1])
+    out: dict[str, Any] = {"t": [round(float(t), 2) for t in times], "edge": [round(float(v), 2) for v in smooth],
+                           "typical_gap_m": round(typical, 1), "end_t": round(float(end_t), 2), "turning": None, "stop": None}
+    lag = 10  # samples = 2 s at 25 fps
+    rises = [(smooth[i] - smooth[i - lag], i) for i in range(lag, len(rows)) if times[i] <= end_t]
+    if not rises or max(rises)[0] < 1.0:
+        return out
+    rise, i = max(rises)
+    frame_idx, t = rows[i][0], float(times[i])
+    out["turning"] = {"t": round(t, 2), "frame_idx": frame_idx, "rise": round(float(rise), 1),
+                      "from": round(float(smooth[i - lag]), 1), "to": round(float(smooth[i]), 1)}
+    players = next(f["players"] for f in frames if f["frame_idx"] == frame_idx)
+    ours, theirs = split(players)
+    free = []
+    for a in ours:
+        if abs(a["x_m"] - goal_x) > _FINAL_THIRD_M or not theirs:
+            continue
+        d = min(theirs, key=lambda q: np.hypot(q["x_m"] - a["x_m"], q["y_m"] - a["y_m"]))
+        dist = float(np.hypot(d["x_m"] - a["x_m"], d["y_m"] - a["y_m"]))
+        if dist > _FREE_M:
+            free.append((abs(a["x_m"] - goal_x), a, d, dist))
+    # The defender has until the next pass or shot after the turning point, at most 3 s: by the
+    # finish the move is long past, and "he had 7 s" always says yes.
+    later = [e["timestamp"] for k in ("passes", "shots") for e in events.get(k, []) if e["timestamp"] > t + 0.2]
+    secs = max(_STOP_MIN_S, min([t + _STOP_WINDOW_S, *later]) - t)  # under 1.5 s the reaction time decides alone
+    secs = min(secs, max(end_t - t, 0.0))
+    gap = _back_gap(theirs, goal_x)
+    if gap:
+        out["turning"].update(gap_m=round(gap[0], 1), gap_ids=[gap[1], gap[2]])
+    if free and secs > _REACTION_S:
+        _, a, d, dist = min(free, key=lambda q: q[0])
+        need = (dist - _TIGHT_M) / (secs - _REACTION_S)
+        out["stop"] = {"att": a["player_id"], "def": d["player_id"], "dist_m": round(dist, 1), "secs": round(secs, 1),
+                       "need_ms": round(need, 1), "reachable": bool(need <= _SPRINT_MS)}
+    return out
+
+
 def add_why_facts(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: set[int]) -> None:
     """Measure what makes a goal possible at each pass and just before the finish.
 
@@ -409,6 +504,9 @@ def add_why_facts(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: 
         if with_ball:
             for f, label in ((with_ball[len(with_ball) // 2], "the middle of the clip"), (with_ball[-1], "the end of the clip")):
                 moments.append((f["frame_idx"], f["players"][0]["timestamp"], label))
+    curve = danger_curve(events, pitch, keepers)
+    if curve and curve["turning"]:
+        moments.append((curve["turning"]["frame_idx"], curve["turning"]["t"], "the turning point"))
     by_frame = {f["frame_idx"]: f["players"] for f in frames}
     facts = []
     for frame_idx, t, label in sorted(moments, key=lambda m: m[0]):
@@ -434,6 +532,18 @@ def add_why_facts(events: dict[str, Any], pitch: list[dict[str, Any]], keepers: 
             parts.append(f"widest gap in the back line {round(gap[0])} m between {gap[1]} and {gap[2]} (typical in this clip {round(typical)} m)")
         facts.append({"event_id": f"why_{len(facts)}", "frame_idx": frame_idx, "timestamp": t,
                       "moment": label, "description": f"At {label}: " + "; ".join(parts) + "."})
+    if curve and curve["turning"]:
+        tp = curve["turning"]
+        text = (f"The turning point at {tp['t']:.1f} s: the attack's edge rose by {tp['rise']} in two seconds "
+                f"(extra attackers near the ball, plus back-line gap beyond typical, {_GAP_PER_MAN:.0f} m per man).")
+        if curve["stop"]:
+            s = curve["stop"]
+            text += (f" Could it be stopped? The free attacker nearest goal, {s['att']}, was {s['dist_m']} m from "
+                     f"defender {s['def']} with {s['secs']} s until the next pass or shot. To get within 2 m after a 0.5 s reaction "
+                     f"the defender needed {s['need_ms']} m/s: " + ("within a sprint, so it could have been stopped."
+                                                                    if s["reachable"] else "faster than a 7 m/s sprint, so he could not get there."))
+        facts.append({"event_id": f"why_{len(facts)}", "frame_idx": tp["frame_idx"], "timestamp": tp["t"],
+                      "moment": "the turning point", "description": text})
     events["why"] = facts
 
 
@@ -658,6 +768,7 @@ def run(video_path: Path, clip_id: str) -> Path:
     explanation["summary"] = name_ids(explanation.get("summary", ""), names)
     for claim in explanation["claims"]:
         claim["text"] = name_ids(claim["text"], names)
+        claim["text"] = claim["text"][:1].upper() + claim["text"][1:]
         claim["commentary"] = name_ids(claim["commentary"], names)
     sources = {str(e.get("event_id") or e.get("moment_id")): e for k in ("passes", "shots", "goals", "key_moments", "why")
                for e in events.get(k, []) if isinstance(e, dict)}
@@ -670,6 +781,13 @@ def run(video_path: Path, clip_id: str) -> Path:
         else:
             kept.append(claim)
     explanation["claims"] = kept
+    head = {"text": name_ids(explanation.get("headline", ""), names), "commentary": "",
+            "evidence": [{"id": i} for i in explanation.get("headline_evidence", []) if str(i) in sources]}
+    if not head["evidence"] or unsupported_numbers(head, sources, names):
+        logger.warning("Dropped headline %r: no evidence, or numbers not in it", head["text"])
+        head["text"] = ""
+    explanation["headline"] = head["text"]
+    explanation["headline_evidence"] = [e["id"] for e in head["evidence"]] if head["text"] else []
     # The audit can "strike" a phrase and keep it reworded with ids; that was never removed.
     final = " ".join(c["text"] + " " + c["commentary"] for c in explanation["claims"]).lower()
     explanation["audit_removed"] = [r for r in explanation.get("audit_removed", []) if name_ids(r, names).lower() not in final]

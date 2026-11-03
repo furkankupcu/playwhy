@@ -113,6 +113,12 @@ def run(video_path: Path, clip_id: str, render: bool = True) -> Path:
     """Write ``graphs.json`` and (optionally) render ``graphs.mp4``."""
     run_dir = Path("runs") / clip_id
     graphs = compute(clip_id)
+    from .explain import danger_curve  # explain imports this module, so import here
+    events_path = run_dir / "events.json"
+    if events_path.is_file():
+        events = json.loads(events_path.read_text(encoding="utf-8"))
+        pitch = json.loads((run_dir / "pitch.json").read_text(encoding="utf-8"))
+        graphs["danger"] = danger_curve(events, pitch, set(graphs["keepers"]))
     path = run_dir / "graphs.json"
     path.write_text(json.dumps(graphs), encoding="utf-8")
     logger.info("Graphs for %d frames written to %s (attacking: %s)", len(graphs["frames"]), path, graphs["attacking_team"])

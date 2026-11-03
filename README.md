@@ -31,6 +31,19 @@ Each claim links to its evidence: a pass, a measured fact, the goal, or a body c
 
 The app also draws **who is marking whom** live over the video and on a top-down pitch (tight < 2 m / loose 2–5 m / free > 5 m), plus each team's shape. It also exports the same view as an MP4.
 
+### Screenshots
+
+| | |
+|---|---|
+| ![Headline and short claims](docs/images/headline.jpg) | ![The turning point, frozen on the video and the pitch](docs/images/freeze-frame.jpg) |
+| **The main reason first**, then short claims with measured evidence. | **The turning point, frozen**: the free attacker's run and the speed the nearest defender needed. |
+| ![The attack's edge over the clip](docs/images/turning-point.jpg) | ![Evidence chips, green and red](docs/images/claim-evidence.jpg) |
+| **The attack's edge** over the clip; the biggest rise is the turning point. | **Evidence** under each claim: green is an edge for the attack, red a weakness. |
+| ![Analysis in progress](docs/images/progress.jpg) | ![A clip without a goal](docs/images/no-goal-clip.jpg) |
+| **Progress** while SAM 3.1 and Muse Spark work (about 10 min per clip). | **No goal?** The move is explained from positions and distances. |
+
+A 2.5-minute walkthrough: `demo/goal-explainer-demo.mp4` (made by `demo/capture.py` and `demo/compose.py` from the running app).
+
 ## How it works
 
 ```
@@ -43,7 +56,7 @@ clip.mp4 → 1 track → 2 calibrate → 3 geometry → 4 read → 5 explain →
 | **2 Calibrate** | SAM 3.1 (+ Muse Spark seed) | SAM 3.1 segments the field, penalty box, centre circle and goals. Candidate fits come from those masks, from Muse Spark keypoints, and from pairs of detected white lines matched to the template's lines. Each is scored on region overlap, white-line alignment on the pitch, and a scale check (players must come out 0.5–1.3 m wide). Four frames spread over the clip are calibrated from scratch. The clearest one becomes the anchor, and camera motion (ORB) carries it forwards and backwards, refitted every 0.5 s. A 4-point manual fallback exists in the UI. |
 | **3 Geometry** | — | Pitch positions, possession, passes (the ball must travel ≥ 3 m), shots (the ball must reach the goal mouth), the offside line at each pass, open lanes, lost markers. A lofted ball's ground track is interpolated between touches, because its projection lands far behind the real spot. |
 | **4 Read** | Muse Spark (video + images) | Muse Spark watches the whole clip to find the goal and the shot. The ball is often lost in a crowded box, so positions alone miss it. If tracking shows a later shot than the goal time Muse Spark gave, tracking wins (one clip: Muse Spark said 17 s, the goal is at 23 s); play after the goal is dropped. Then, for ~10 key moments, it reads context crops (upscaled, player boxed): orientation, gaze, raised arm, slip, reaction, shirt number, each with a confidence. |
-| **5 Explain** | Muse Spark | Code first adds measured facts: pass length, direction and the receiver's space; numbers around the ball and in the box, the back-line gap against its typical width, free attackers. Muse Spark writes up to 6 claims and a summary under a JSON schema, citing evidence ids. Code drops claims with unknown evidence, a time far from it, or a number not in it. A second Muse Spark pass strikes unsupported wording, and Muse Spark writes one spoken line per claim. |
+| **5 Explain** | Muse Spark | Code first adds measured facts: pass length, direction and the receiver's space; numbers around the ball and in the box, the back-line gap against its typical width, free attackers; and the turning point, where the attack's edge rose most, with the speed the nearest defender needed to close the free attacker down (after a 0.5 s reaction, against a 7 m/s sprint). Muse Spark writes up to 6 claims and a summary under a JSON schema, citing evidence ids. Code drops claims with unknown evidence, a time far from it, or a number not in it. A second Muse Spark pass strikes unsupported wording, and Muse Spark writes one spoken line per claim. |
 | **6 Graphs** | — | Marking and team-shape graphs per frame (`graphs.json` for the UI, `graphs.mp4` for sharing). |
 
 Everything is cached on disk per request, so re-running a step costs nothing.
@@ -98,6 +111,15 @@ Goal 1 is the demo. On goals 2 and 3 the players are small (often under 40 px) a
 - **Checked by eye, not against labels.** Claims were compared with the footage for the three goals above, not against a labelled event set. No broadcast footage has been tested.
 - **Speed.** ~10 minutes per 20 s clip; not live.
 
+## What's next
+
+- **Find the ball in a crowded box.** Re-track on a zoomed crop around the ball's last known spot instead of losing it.
+- **Auto-zoom wide shots.** Crop to the action before tracking: SAM 3.1 found both teams and the ball at 1200 px where it found one team at 2100 px.
+- **More than 16 players per prompt.** Track the frame in tiles and join the tracks.
+- **"Usual" learned from many matches.** Today a gap is "wider than usual" against the same clip; a league baseline would be fairer.
+- **Faster.** Read body cues and write in parallel: about 4 minutes per clip instead of 10.
+- **The defender's real speed.** "Could it be stopped" assumes a 7 m/s sprint and a 0.5 s reaction for everyone; per-player speeds from the tracks would be better.
+
 ## Run it
 
 ```bash
@@ -120,11 +142,19 @@ Outputs land in `runs/<clip_id>/`: `tracks.json`, `homography.json`, `pitch.json
 
 All code in this repository was written during the hackathon, starting 2026-10-27. The git history shows every step. Nothing was carried over from an earlier project.
 
-## Data and credits
+## Data, footage and licences
 
-- **SoccerTrack v2** (Atom Scott et al.), [huggingface.co/datasets/atomscott/soccertrack-v2](https://huggingface.co/datasets/atomscott/soccertrack-v2), **CC BY 4.0**. The goal clips are 24 s crops of matches 117093 (first half), 118575 (first half) and 128058 (second half); their hand-placed keypoints are used for calibration and for measuring error. Please cite the SoccerTrack v2 paper (arXiv:2508.01802).
-- The phone clip was filmed by the author.
-- Pitch, tracking and reasoning models: **Meta Model API** (SAM 3.1, Muse Spark), parsed with Meta's `meta-sam-parser`.
+No television broadcast or other copyrighted match footage is used anywhere in this project.
+
+| What | Source | Licence | How it is used |
+|---|---|---|---|
+| Goal clips (3 goals) | **SoccerTrack v2** by Atom Scott et al., [huggingface.co/datasets/atomscott/soccertrack-v2](https://huggingface.co/datasets/atomscott/soccertrack-v2) (paper: arXiv:2508.01802) | **CC BY 4.0** | 24 s segments of matches 117093 (1st half), 118575 (1st half) and 128058 (2nd half), cropped to the attacked half. The dataset's hand-placed pitch keypoints calibrate these clips and measure our calibration error. Screenshots in `docs/images` and the demo video show frames from these clips, with this attribution. |
+| Phone clip (corner kick, no goal) | Filmed by the author from the stands | The author's own footage | Calibration accuracy (30 hand-marked points) and the no-goal example. |
+| Models | **Meta Model API**: SAM 3.1 and Muse Spark | Meta Model API terms | All tracking, segmentation and reasoning, through the API. No model was trained or fine-tuned, and no weights are included. |
+| SAM output parsing | Meta's `meta-sam-parser` (PyPI) | its own licence | Decodes SAM 3.1's streamed boxes and masks. |
+| Python libraries | OpenCV, NumPy, SciPy, Matplotlib, FastAPI, Pillow, imageio-ffmpeg, Playwright (see `requirements.txt`) | their own open-source licences | Geometry, the web app and the demo video. |
+
+The video clips, dataset files and analysis runs are not in this repository (`clips/`, `data/` and `runs/` are git-ignored). To reproduce, download SoccerTrack v2 from Hugging Face under its licence.
 
 ## Repository
 

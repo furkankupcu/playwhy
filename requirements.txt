@@ -6,3 +6,8 @@ uvicorn>=0.29
 python-multipart>=0.0.9
 httpx>=0.25
 meta-sam-parser==0.1.0
+matplotlib>=3.8
+imageio-ffmpeg>=0.4.9
+# demo video only (demo/capture.py, demo/compose.py)
+Pillow>=10.0
+playwright>=1.40

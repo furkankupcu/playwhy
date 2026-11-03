@@ -53,6 +53,7 @@ def main() -> None:
             page.wait_for_function(f"typeof R !== 'undefined' && R.data && R.data.clip_id === '{clip}'", timeout=60000)
             page.evaluate("t => { const v = document.getElementById('video'); v.muted = true; v.currentTime = t; }", t)
             page.wait_for_function("(() => { const v = document.getElementById('video'); return !v.seeking && v.readyState >= 2; })()", timeout=60000)
+            page.evaluate("window.scrollTo(0, 0)")  # the browser restores the last scroll on the same URL
             page.wait_for_timeout(600)
 
         # result page: the top, mid build-up
@@ -85,12 +86,33 @@ def main() -> None:
         page.evaluate("document.getElementById('ask-form').scrollIntoView({block: 'center'})")
         page.wait_for_timeout(400)
         shot("ask")
+        # the turning point, frozen and drawn; then the attack's edge over the clip
+        tp = page.evaluate("R.data.graphs.danger && R.data.graphs.danger.turning && R.data.graphs.danger.turning.t")
+        if tp:
+            open_clip(GOAL, tp)
+            page.wait_for_timeout(500)
+            shot("freeze")
+            page.evaluate("document.getElementById('danger-wrap').scrollIntoView({block: 'center'})")
+            page.wait_for_timeout(400)
+            shot("danger")
         # marking at the cross, then the heatmap and a measured distance
         open_clip(GOAL, 18.6)
         shot("marking")
         page.click("#t-heat"); page.click("#t-heat")
         page.wait_for_timeout(400)
         shot("heatmap")
+        page.click("#t-shape"); page.wait_for_timeout(400); shot("shape")
+        open_clip(GOAL, 12.9)
+        page.click("#t-offside"); page.wait_for_timeout(400); shot("offside")
+        page.click("#t-marks")
+        page.evaluate("R.measure = [2005, 1003]; drawPitch()")
+        page.wait_for_timeout(400)
+        shot("measure")
+        # hand calibration and accuracy check, with the numbered pitch map
+        page.goto(f"{BASE}/?k=1#/clip/{PHONE}/calibrate")
+        page.wait_for_selector("#cal-template g")
+        page.wait_for_timeout(1200)
+        shot("calibrate")
         # a clip with no goal, explained from positions
         open_clip(PHONE, 10.4)
         shot("phone_top")
@@ -114,6 +136,14 @@ def main() -> None:
               <tr><td {td} style="color:#9AA8A1">Verdict</td><td {td} style="color:#8FD9AE">build-up + reason</td>
                 <td {td} style="color:#F5B0A8">reason at the finish only</td><td {td} style="color:#F5D9A0">goal right, build-up missed</td></tr></table>
               <div style="font-size:17px;color:#9AA8A1;margin-top:10px">Small players on wide panoramas lose passes. The page says less instead of making it up.</div>""",
+            "next": """<div style="font-size:40px;font-weight:700;margin-bottom:8px">What's next</div>
+              <ul style="font-size:21px;line-height:1.7;color:#B9C5BF;margin:0;max-width:900px">
+              <li>Find the ball in a crowded box: re-track on a zoomed crop around its last spot</li>
+              <li>Auto-zoom wide shots before tracking: SAM 3.1 finds far more players and passes at 1200 px</li>
+              <li>More than 16 players per prompt: track the frame in tiles</li>
+              <li>"Usual" gaps learned from many matches, not one clip</li>
+              <li>About 4 minutes per clip instead of 10: read cues and write in parallel</li>
+              </ul>""",
             "end": """<div style="font-size:58px;font-weight:700">Goal Explainer</div>
               <div style="font-size:24px;color:#B9C5BF">SAM 3.1 + Muse Spark · Meta Model API</div>
               <div style="font-size:22px;color:#F2B33D">github.com/furkankupcu/goal-explainer</div>
